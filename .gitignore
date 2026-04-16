@@ -1,0 +1,9 @@
+
+# Directories
+__pycache__/
+.venv*/
+LOCAL/
+
+# File globs
+*.pyc
+*.lines
