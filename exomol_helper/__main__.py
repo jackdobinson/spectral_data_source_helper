@@ -3,8 +3,6 @@ import sys
 import argparse as ap
 from typing import Any
 
-import pickle
-
 import numpy as np
 
 from exomol_helper.cfg.const import (
@@ -20,6 +18,9 @@ from exomol_helper.exomol_dataset_holder import ExomolDatasetHolder
 from exomol_helper.exomol import (
 	exomol_all_dataset_name_dict,
 )
+
+import exomol_helper.utils
+import exomol_helper.utils.dtype
 
 
 import logging
@@ -92,8 +93,7 @@ def exomol_select_datasets(
 		raise RuntimeError(' '.join(err_msg))
 	
 	return sorted(dataset_selectors)
-	
-	
+
 
 def exomol_download(
 		dataset_holders : list[ExomolDatasetHolder],
@@ -110,6 +110,7 @@ def exomol_download(
 		ds_holder.cache_data()
 		print(f'Dataset {i} downloaded.')
 
+
 def exomol_list(
 		dataset_holders : list[ExomolDatasetHolder],
 ):
@@ -117,6 +118,7 @@ def exomol_list(
 	print(f'The following {len(dataset_holders)} datasets are selected:')
 	for ds_holder in dataset_holders:
 		print(f'  {ds_holder.short_info_str}')
+
 
 def exomol_states(
 		dataset_holders : list[ExomolDatasetHolder],
@@ -159,10 +161,10 @@ def exomol_trans(
 		
 		dtype = ds_holder.trans_dtype
 		
-		names = ' '.join(x[0] for x in dtype)
+		names = ' '.join(x for x in dtype.names)
 		print(f'    names: {names}')
 		
-		types = ' '.join(str(x[1])[8:-2] if isinstance(x[1],type) else str(x[1]) for x in dtype)
+		types = ' '.join(f'{x[0].type}' for x in dtype.fields.values())
 		print(f'    types: {types}')
 		
 		n_files = len(ds_holder.api_transition_urls)
@@ -184,7 +186,7 @@ def exomol_trans(
 			if do_stop:
 				break
 		
-		print(f'    Transition states columns {" ".join((x[0] for x in ds_holder.transition_states_dtype))}')
+		print(f'    Transition states columns {" ".join((x for x in ds_holder.transition_states_dtype.names))}')
 		print(f'    First {n_to_print} transition states information:')
 		do_stop = False
 		chunk_size = 1_000_000
@@ -198,7 +200,7 @@ def exomol_trans(
 			if do_stop:
 				break
 		
-		print(f'    Line data columns: {" ".join([x[0] for x in ds_holder.line_data_dtype])}')
+		print(f'    Line data columns: {" ".join([x for x in ds_holder.line_data_dtype.names])}')
 		print(f'    First {n_to_print} line data:')
 		do_stop = False
 		chunk_size = 1_000_000
@@ -212,6 +214,7 @@ def exomol_trans(
 			if do_stop:
 				break
 
+
 def exomol_calc_line_data(
 		dataset_holders : list[ExomolDatasetHolder],
 		chunk_size : int = 1_000_000,
@@ -219,12 +222,12 @@ def exomol_calc_line_data(
 	pkg_logger.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
 	for ds_holder in dataset_holders:
-		with open(REPO_LOCAL / f'{ds_holder.datafile_prefix}.lines.dtype.pkl', 'wb') as f:
-			pickle.dump(ds_holder.line_data_dtype, f)
-	
 		with open(REPO_LOCAL / f'{ds_holder.datafile_prefix}.lines', 'wb') as f:
+			# Write dtype header
+			f.write(exomol_helper.utils.dtype.to_string(ds_holder.line_data_dtype).encode('ascii'))
+			
+			# Write line data
 			for line_data_chunk in ds_holder.iter_line_data(chunk_size=chunk_size):
-				#np.savetxt(f, line_data_chunk)
 				line_data_chunk.tofile(f)
 
 
@@ -240,49 +243,46 @@ def exomol_read_line_data(
 	for ds_holder in dataset_holders:
 		print(f'Reading saved line data for {ds_holder.short_info_str}')
 	
-		dtype_fpath = REPO_LOCAL / f'{ds_holder.datafile_prefix}.lines.dtype.pkl'
 		line_data_fpath = REPO_LOCAL / f'{ds_holder.datafile_prefix}.lines'
 		
-		saved_dtype = None
 		line_data = None
+		use_dtype = None
 		
 		print('    Found the following files:')
-		
-			
 		if line_data_fpath.exists():
 			print(f'        line data : {line_data_fpath}')
 		else:
 			pkg_logger.error('Could not find line data file, exiting...')
 			return
-			
-		if dtype_fpath.exists():
-			print(f'        dtype : {dtype_fpath}')
 		
-		if dtype_fpath.exists():
-			print('    Reading dtype.')
-			with open(dtype_fpath, 'rb') as f:
-				saved_dtype = pickle.load(f)
-		else:
-			print('    Using dtype from EXOMOL index as no file with dtype was found.')
 		
-		if saved_dtype is not None and tuple(saved_dtype) != tuple(ds_holder.line_data_dtype):
-			pkg_logger.warn(f'data type of saved data is "{saved_dtype}" which is different from expected "{ds_holder.line_data_dtype}".')
-		
-		print('    Reading line data.')
-		
-		use_dtype = saved_dtype if saved_dtype is not None else ds_holder.line_data_dtype
 		with open(line_data_fpath, 'rb') as f:
+			
+			print('    Reading header for line data.')
+			# read until balanced curly brackets, this is prob. inefficient but only happens once per file
+			hdr_fail_size = 32
+			hdr_part = f.read(1)
+			while len(hdr_part) < hdr_fail_size or (hdr_part.count(b'{') !=hdr_part.count(b'}')) :
+				hdr_part += f.read(1)
+			
+			if (hdr_part.count(b'{') == hdr_part.count(b'}')):
+				use_dtype = exomol_helper.utils.dtype.from_string(hdr_part.decode('ascii'))
+			else:
+				raise RuntimeError(f'Could not read header. Got "{hdr_part}"')
+			
+			print('    Reading line data.')
 			line_data = np.fromfile(f, dtype=use_dtype)
+		
 		
 		if line_data is None:
 			pkg_logger.error(f'Something went wrong when reading {line_data_fpath}. Exiting...')
 			return
 		print('    Line data has the following columns:')
-		print(f'        {" | ".join((x[0] for x in use_dtype))}')
-		print(f'    Printing line data slice {line_data_slice}')
+		print(f'        {" | ".join(use_dtype.names)}')
+		print(f'    Printing line data slice {line_data_slice} of {line_data.size} rows.')
 		for line_data_record in line_data[line_data_slice]:
 			print(f'        {line_data_record}')
-		
+
 
 def exomol_tree(
 		dataset_holders : list[ExomolDatasetHolder],
@@ -310,8 +310,6 @@ def exomol_tree(
 			for j, dset in enumerate(dsets):
 					print(f'{indent_0}{indent_0}{indent_1}{dset}')
 	print('#------------------------------------------#')
-
-
 
 
 if __name__=='__main__':

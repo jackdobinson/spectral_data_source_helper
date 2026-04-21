@@ -6,6 +6,7 @@ from pathlib import Path
 import urllib.request
 import ssl
 from typing import Generator, Literal, Any
+import dataclasses as dc
 
 from exomol_helper.cfg.log import progress_lgr
 from exomol_helper.cfg.log import pkg_logger as _lgr
@@ -24,6 +25,40 @@ MEM_UNIT_NAME = 'Mb' #'Kb'
 PROGRESS_INTERVAL_MEM_UNIT : None | float = 100
 # Interval (in kilobytes) on amount of data fetched to report progress (at log level `INFO`). If `None` will not report progress.
 
+@dc.dataclass(slots=True)
+class TaskState:
+	state : Literal['uninitialised', 'initialised', 'waiting', 'paused', 'executing', 'failed', 'succeeded'] = 'uninitialised',
+	
+	def set(
+			self, 
+			state : Literal['uninitialised', 'initialised', 'waiting', 'paused', 'executing', 'failed', 'succeeded'],
+	):
+		assert state in ('uninitialised', 'initialised', 'waiting', 'paused', 'executing', 'failed', 'succeeded'), f'Unknown state "{state}"'
+		self.state = state
+	
+	def get(self) -> str:
+		return self.state
+	
+	def is_ready(self) -> bool:
+		return self.state in ('initialised', 'waiting')
+	
+	def was_started(self) -> bool:
+		return not self.state in ('uninitialised', 'initialised', 'waiting')
+	
+	def is_inprogress(self) -> bool:
+		return self.state in ('paused', 'executing')
+	
+	def is_finished(self) -> bool:
+		return self.state in ('failed', 'succeeded')
+	
+	def __eq__(self, state : Literal['uninitialised', 'initialised', 'waiting', 'paused', 'executing', 'failed', 'succeeded']) -> bool:
+		assert state in ('uninitialised', 'initialised', 'waiting', 'paused', 'executing', 'failed', 'succeeded'), f'Unknown state "{state}" for comparison'
+		return self.state == state
+	
+	def __ne__(self, state : Literal['uninitialised', 'initialised', 'waiting', 'paused', 'executing', 'failed', 'succeeded']) -> bool:
+		return not (self.__eq__(state))
+
+
 
 class ChunkedFileDownloader:
 	def __init__(self,
@@ -40,7 +75,7 @@ class ChunkedFileDownloader:
 		self.proxy=proxy
 		self.error_code_action = error_code_action
 		self.skip_if_content_length = skip_if_content_length
-		self.status = 'ready'
+		self.status = TaskState()
 		
 		self.content_length = -1 # if -ve content length is not specified
 	
@@ -74,23 +109,21 @@ class ChunkedFileDownloader:
 		try:
 			self.response = opener.open(url)
 		except urllib.error.HTTPError as e:
+			self.status.set('failed')
 			eca = error_code_action.get(e.code, 'error')
 			match eca:
 				case 'ignore':
-					self.status = 'finished'
 					return
 				case 'warning':
-					self.status = 'finished'
 					_lgr.warn(f'Could not open url. Error: {str(e)}')
 					return
 				case _:
-					self.status = 'failed'
 					raise e
 		
 		self.content_length = int(self.response.headers.get('Content-Length', -1))
 		if skip_if_content_length is not None and (skip_if_content_length == self.content_length):
 			_lgr.debug(f'skipping... {skip_if_content_length=} {self.content_length=}')
-			self.status = 'finished'
+			self.status.set('succeeded')
 		
 		if chunk_size is None:
 			self.get_chunk = lambda response: response.readline()
@@ -101,24 +134,33 @@ class ChunkedFileDownloader:
 			self.do_decode = lambda x: x
 		else:
 			self.do_decode = lambda x: x.decode(encoding)
+		
+		if self.status == 'uninitialised':
+			self.status.set('waiting')
 	
 	def download(self) -> Generator[bytes|str]:
+		self.status.set('executing')
 		last_reported_size = -1E30 # very negative number so we report the first size value
 		self.accumulated_size = 0
 		i = 0
 		
 		while (size_of_current_chunk := len(chunk := self.get_chunk(self.response))) > 0:
 			
+			
 			if PROGRESS_INTERVAL_MEM_UNIT is not None and ((self.accumulated_size - last_reported_size) >= (PROGRESS_INTERVAL_MEM_UNIT*MEM_UNIT_BYTES)):
 				progress_lgr.info(f'Fetching chunk {i}. Chunk is {size_of_current_chunk/MEM_UNIT_BYTES:8.2f} {MEM_UNIT_NAME}. Fetched {self.accumulated_size/MEM_UNIT_BYTES:8.2f} {MEM_UNIT_NAME} so far...')
 				last_reported_size = self.accumulated_size
 			
 			self.accumulated_size += size_of_current_chunk
+			self.status.set('paused')
 			yield self.do_decode(chunk)
+			self.status.set('executing')
 			i += 1
+			
 		
+		self.status.set('succeeded')
 		progress_lgr.info(f'Fetch complete, downloaded {self.accumulated_size/MEM_UNIT_BYTES:8.2f} {MEM_UNIT_NAME} in total over {i} chunks.')
-		self.status = 'finished'
+		
 		return
 	
 	def can_check_download(self):
@@ -183,53 +225,63 @@ def file(
 		),
 	)
 	
-	if file_chunk_downloader.status == 'finished':
-		return
-	elif file_chunk_downloader.status == 'error':
-		_lgr.error(f'Could not fetch {url}')
-		return
+	if not file_chunk_downloader.status.is_finished():
 	
-	print('Performing download...')
-	
-	if encoding is None:
-		if prefix is not None and isinstance(prefix, str):
-			prefix = bytes(prefix, encoding='utf-8')
+		print('Performing download...')
 		
-	if to_fpath is not None:
-		_lgr.info(f"Downloading from {url} and saving to path '{to_fpath}'")
-		
-		write_mode = 'wb' if encoding is None else 'w'
-		
-		if use_working_file:
-			_lgr.debug('Using working file')
-			real_fpath = Path(to_fpath)
-			to_fpath = real_fpath.with_stem('~'+real_fpath.stem)
-		
-		try:
-			_lgr.debug(f'Writing to "{to_fpath}"')
-			with open(to_fpath, write_mode) as f:
-				if prefix is not None:
-					f.write(prefix)
-				for chunk in file_chunk_downloader.download():
-					f.write(chunk)
-		
-		except Exception as e:
-			# delete file if something goes wrong
-			if remove_file_on_failure:
-				to_fpath.unlink()
-			raise e
+		if encoding is None:
+			if prefix is not None and isinstance(prefix, str):
+				prefix = bytes(prefix, encoding='utf-8')
+			
+		if to_fpath is not None:
+			_lgr.info(f"Downloading from {url} and saving to path '{to_fpath}'")
+			
+			write_mode = 'wb' if encoding is None else 'w'
+			
+			if use_working_file:
+				_lgr.debug('Using working file')
+				real_fpath = Path(to_fpath)
+				to_fpath = real_fpath.with_stem('~'+real_fpath.stem)
+			
+			try:
+				_lgr.debug(f'Writing to "{to_fpath}"')
+				with open(to_fpath, write_mode) as f:
+					if prefix is not None:
+						f.write(prefix)
+					for chunk in file_chunk_downloader.download():
+						f.write(chunk)
+			
+			except Exception as e:
+				file_chunk_downloader.status = 'failed'
+				# delete file if something goes wrong
+				if remove_file_on_failure:
+					to_fpath.unlink()
+				raise e
+			
+			else:
+				# If no error, move the working file to the desired file path
+				if use_working_file:
+					_lgr.debug('Moving working file')
+					to_fpath.replace(real_fpath)
+			
+			return
 		
 		else:
-			# If no error, move the working file to the desired file path
-			if use_working_file:
-				_lgr.debug('Moving working file')
-				to_fpath.replace(real_fpath)
-		
-		return
-		
+			empty_str = b'' if encoding is None else ''
+			try:
+				return (empty_str if prefix is None else prefix) + empty_str.join(file_chunk_downloader.download())
+			except Exception as e:
+				file_chunk_downloader.status = 'failed'
+				raise e
+
+	elif file_chunk_downloader.status == 'failed':
+		_lgr.error(f'Could not download {url}')
+		return None
+	elif file_chunk_downloader.status == 'succeeded':
+		# This should only happen if `to_fpath` is not None and the downloadable content length is the same as the file. Therefore return None
+		return None
 	else:
-		empty_str = b'' if encoding is None else ''
-		return (empty_str if prefix is None else prefix) + empty_str.join(file_chunk_downloader.download())
+		raise RuntimeError(f'File chunk downloader has unhandled status {file_chunk_downloader.status=}')
 
 
 def file_from_cache(
@@ -239,8 +291,13 @@ def file_from_cache(
 		remove_www : bool = True, # if True, will remove "www.xxx.yyy" from URLs to give "xxx.yyy".
 		refresh : bool = False, # if True, will refresh the cache
 		check_web_first : bool = False,
+		not_found_in_cache_action : Literal['error', 'return_none', 'return_empty', 'cache_empty'] = 'error',
 		**kwargs : dict[str,Any], # Passed to `fetch.file(...)`
 	) -> Path | bytes | str:
+	
+	default_kwargs = {
+		'remove_file_on_failure' : True,
+	}
 	
 	url_copy = url[:]
 	for x in WEB_PREFIXES:
@@ -280,27 +337,39 @@ def file_from_cache(
 	cache_fpath.parent.mkdir(parents=True,exist_ok=True)
 	
 	# download file into folder
-	try:
-		file(
-			url, 
-			to_fpath = cache_fpath, 
-			skip_if_size_on_disk=not refresh, 
-			**kwargs
-		)
-	except Exception as e:
-		#print(f'ERROR DOWNLOADING URL {url} TO FILE {cache_fpath}. Error: {e}')
-		if cache_fpath.exists():
-			cache_fpath.unlink() # remove bad file
-		raise e
+	file(
+		url, 
+		to_fpath = cache_fpath, 
+		skip_if_size_on_disk=not refresh, 
+		**{**default_kwargs, **kwargs},
+	)
+
 	
-	if cache_fpath.exists():
-		if return_fpath:
-			return cache_fpath
+	if not cache_fpath.exists():
+		if not_found_in_cache_action == 'return_none':
+			return None
+			
+		elif not_found_in_cache_action == 'return_empty':
+			if return_fpath:
+				EMPTY_CACHE_PATH = Path(cache)/'empty'
+				with open(EMPTY_CACHE_PATH, 'w') as f:
+					pass
+				return EMPTY_CACHE_PATH
+			else:
+				return ''
+				
+		elif not_found_in_cache_action == 'cache_empty':
+			with open(cache_fpath, 'w') as f:
+				pass
+				
 		else:
-			with open(cache_fpath, 'r') as f:
-				return f.read()
+			raise RuntimeError(f'Could not retrieve {url} from cache at {cache_fpath}')
+	
+	if return_fpath:
+		return cache_fpath
 	else:
-		raise RuntimeError(f'Could not retrieve {url} from cache at {cache_fpath}')
+		with open(cache_fpath, 'r') as f:
+			return f.read()
 
 
 

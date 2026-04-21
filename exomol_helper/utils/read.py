@@ -1,18 +1,22 @@
 
 from pathlib import Path
-from typing import Generator, Any
+from typing import Generator, Callable, Iterable#, Any
 import bz2
 
 import numpy as np
 
 from exomol_helper.cfg.log import progress_lgr
 from exomol_helper.cfg.log import pkg_logger as _lgr
+import exomol_helper.utils.dtype
 
 PROGRESS_INTERVAL = 100_000
 
 def iter_line_records(
-		fpaths : list[str | Path],
+		fpaths : str | Path | list[str | Path],
 ) -> Generator[str]:
+	if isinstance(fpaths, (str, Path)):
+		fpaths = (fpaths,)
+		
 	for fpath in fpaths:
 		if isinstance(fpath, str):
 			fpath = Path(fpath)
@@ -28,12 +32,16 @@ def iter_line_records(
 
 
 def load_line_records_into_structured_array(
-		fpaths : list[str | Path],
-		dtype : list[tuple[str,Any] | tuple[str,Any,tuple[int,...]]],
+		fpaths : str | Path | list[str | Path],
+		dtype : np.dtype,
 		shape : None | int | tuple[int,...] = None,
 		widths : None | int | tuple[int,...] = None,
 		delim : None | str = '',
+		mutator : None | Callable[[Iterable],Iterable] = None,
 ) -> np.ndarray:
+	if isinstance(fpaths, (str, Path)):
+		fpaths = (fpaths,)
+		
 	if (widths is not None and delim!='') or (widths is None and delim==''):
 		raise RuntimeError('Must specify exactly a single one of `widths` and `delim`')
 
@@ -51,12 +59,21 @@ def load_line_records_into_structured_array(
 	if delim != '':
 		for i, v in enumerate(iter_line_records(fpaths)):
 			ss = v.split(delim)
-			if len(ss) == 0:
+			if len(ss) == 0 or len(v)==0:
 				break
 			
 			if i%PROGRESS_INTERVAL == 0:
 				progress_lgr.info(f'{i=} ##{v}')
-			result[i] = tuple(dtype[j][1](x) if not isinstance(dtype[j][1],str) else x for j,x in enumerate(ss))
+			
+			if mutator is not None:
+				ss = mutator(ss)
+				
+			#result[i] = tuple(dtype[j][1](x) if not isinstance(dtype[j][1],str) else x for j,x in enumerate(ss))
+			try:
+				result[i] = exomol_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
+			except Exception as e:
+				_lgr.error(f'{i=} {v[:80]=}')
+				raise e
 	
 	elif widths is not None:
 		cwidths = tuple(sum(widths[:i]) for i in range(len(widths)))
@@ -66,7 +83,17 @@ def load_line_records_into_structured_array(
 			
 			if i%PROGRESS_INTERVAL == 0:
 				progress_lgr.info(f'{i=} ##{x}')
-			result[i] = tuple(dtype[j][1](x[c:c+w]) if not isinstance(dtype[j][1],str) else x[c:c+w] for j,c,w in enumerate(zip(cwidths, widths)))
+			
+			ss = (x[c:c+w] for c,w in zip(cwidths, widths))
+			if mutator is not None:
+				ss = mutator(ss)
+			
+			try:
+				#result[i] = tuple(dtype[j][1](x[c:c+w]) if not isinstance(dtype[j][1],str) else x[c:c+w] for j,c,w in enumerate(zip(cwidths, widths)))
+				result[i] = exomol_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
+			except Exception as e:
+				_lgr.error(f'{i=} {x[:80]=}')
+				raise e
 	
 	else:
 		raise RuntimeError('Must specify exactly a single one of `widths` and `delim`')
@@ -81,12 +108,16 @@ def load_line_records_into_structured_array(
 
 
 def load_line_records_into_structured_array_by_chunks(
-		fpaths : list[str | Path],
-		dtype : list[tuple[str,Any] | tuple[str,Any,tuple[int,...]]],
+		fpaths : str | Path | list[str | Path],
+		dtype : np.dtype,
 		widths : None | int | tuple[int,...] = None,
 		delim : None | str = '',
-		chunk_size : int = 1_000_000
+		chunk_size : int = 1_000_000,
+		mutator : None | Callable[[Iterable],Iterable] = None,
 ) -> np.ndarray:
+	if isinstance(fpaths, (str, Path)):
+		fpaths = (fpaths,)
+		
 	if (widths is not None and delim!='') or (widths is None and delim==''):
 		raise RuntimeError('Must specify exactly a single one of `widths` and `delim`')
 
@@ -100,7 +131,7 @@ def load_line_records_into_structured_array_by_chunks(
 	if delim != '':
 		for v in iter_line_records(fpaths):
 			ss = v.split(delim)
-			if len(ss) == 0:
+			if len(ss) == 0 or len(v)==0:
 				break
 				
 			if i >= mm:
@@ -112,7 +143,16 @@ def load_line_records_into_structured_array_by_chunks(
 			#if i%PROGRESS_INTERVAL == 0:
 			if progress_lgr.is_ready():
 				progress_lgr.info(f'{i=} ##{v}')
-			chunk[i-nn] = tuple(dtype[j][1](x) if not isinstance(dtype[j][1],str) else x for j,x in enumerate(ss))
+			
+			if mutator is not None:
+				ss = mutator(ss)
+			try:
+				#chunk[i-nn] = tuple(dtype[j][1](x) if not isinstance(dtype[j][1],str) else x for j,x in enumerate(ss))
+				#chunk[i-nn] = tuple(dtype[j].type(x) for j,x in enumerate(ss))
+				chunk[i-nn] = exomol_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
+			except Exception as e:
+				_lgr.error(f'{i=} {v[:80]=}')
+				raise e
 			i+=1
 	
 	elif widths is not None:
@@ -129,7 +169,17 @@ def load_line_records_into_structured_array_by_chunks(
 			#if i%PROGRESS_INTERVAL == 0:
 			if progress_lgr.is_ready():
 				progress_lgr.info(f'{i=} ##{x}')
-			chunk[i-nn] = tuple(dtype[j][1](x[c:c+w]) if not isinstance(dtype[j][1],str) else x[c:c+w] for j,c,w in enumerate(zip(cwidths, widths)))
+			
+			ss = (x[c:c+w] for c,w in zip(cwidths, widths))
+			if mutator is not None:
+				ss = mutator(ss)
+			try:
+				#chunk[i-nn] = tuple(dtype[j][1](x[c:c+w]) if not isinstance(dtype[j][1],str) else x[c:c+w] for j,c,w in enumerate(zip(cwidths, widths)))
+				#chunk[i-nn] = tuple(dtype[j].type(x[c:c+w]) for j,c,w in enumerate(zip(cwidths, widths)))
+				chunk[i-nn] = exomol_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
+			except Exception as e:
+				_lgr.error(f'{i=} {x[:80]=}')
+				raise e
 			i+=1
 	
 	else:
@@ -141,12 +191,16 @@ def load_line_records_into_structured_array_by_chunks(
 
 
 def iter_line_records_via_structured_array_chunk(
-		fpaths : list[str | Path], 
-		dtype : list[tuple[str,Any] | tuple[str,Any,tuple[int,...]]],
+		fpaths : str | Path | list[str | Path], 
+		dtype : np.dtype,
 		widths : None | int | tuple[int,...] = None,
 		delim : None | str = '',
-		chunk_size : int = 1_000_000
+		chunk_size : int = 1_000_000,
+		mutator : None | Callable[[Iterable],Iterable] = None,
 ) -> np.ndarray:
+	if isinstance(fpaths, (str, Path)):
+		fpaths = (fpaths,)
+
 	if (widths is not None and delim!='') or (widths is None and delim==''):
 		raise RuntimeError('Must specify exactly a single one of `widths` and `delim`')
 
@@ -159,7 +213,7 @@ def iter_line_records_via_structured_array_chunk(
 	if delim != '':
 		for v in iter_line_records(fpaths):
 			ss = v.split(delim)
-			if len(ss)==0:
+			if len(ss)==0 or len(v)==0:
 				break
 			if i >= mm:
 				yield chunk
@@ -169,7 +223,17 @@ def iter_line_records_via_structured_array_chunk(
 			#if i%PROGRESS_INTERVAL == 0:
 			if progress_lgr.is_ready():
 				progress_lgr.info(f'{i=} ##{v}')
-			chunk[i-nn] = tuple(dtype[j][1](x) if not isinstance(dtype[j][1],str) else x for j,x in enumerate(ss))
+			
+			if mutator is not None:
+				ss = mutator(ss)
+			
+			try:
+				#chunk[i-nn] = tuple(dtype[j][1](x) if not isinstance(dtype[j][1],str) else x for j,x in enumerate(ss))
+				#chunk[i-nn] = tuple(dtype[j].type(x) for j,x in enumerate(ss))
+				chunk[i-nn] = exomol_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
+			except Exception as e:
+				_lgr.error(f'{i=} {v[:80]=}')
+				raise e
 			i+=1
 	
 	elif widths is not None:
@@ -185,7 +249,18 @@ def iter_line_records_via_structured_array_chunk(
 			#if i%PROGRESS_INTERVAL == 0:
 			if progress_lgr.is_ready():
 				progress_lgr.info(f'{i=} ##{x}')
-			chunk[i-nn] = tuple(dtype[j][1](x[c:c+w]) if not isinstance(dtype[j][1],str) else x[c:c+w] for j,c,w in enumerate(zip(cwidths, widths)))
+			
+			ss = (x[c:c+w] for c,w in zip(cwidths, widths))
+			if mutator is not None:
+				ss = mutator(ss)
+			
+			try:
+				#chunk[i-nn] = tuple(dtype[j][1](x[c:c+w]) if not isinstance(dtype[j][1],str) else x[c:c+w] for j,c,w in enumerate(zip(cwidths, widths)))
+				#chunk[i-nn] = tuple(dtype[j].type(x[c:c+w]) for j,c,w in enumerate(zip(cwidths, widths)))
+				chunk[i-nn] = exomol_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
+			except Exception as e:
+				_lgr.error(f'{i=} {x[:80]=}')
+				raise e
 			i+=1
 	
 	else:

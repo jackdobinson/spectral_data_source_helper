@@ -174,7 +174,7 @@ class ExomolDatasetHolder:
 	
 	@property
 	def states_short_names(self) -> list[str]:
-		return [x[0].split(':')[-1] for x in self.states_dtype]
+		return [x.split(':')[-1] for x in self.states_dtype.names]
 	
 	@property
 	def states(self) -> np.ndarray:
@@ -222,7 +222,7 @@ class ExomolDatasetHolder:
 	@property
 	def trans_dtype(self) -> list[tuple[str,Any]]:
 		if self._trans_dtype is None:
-			self._trans_dtype = [('upper_id',int),('lower_id',int), ('einstein_A', float), ('wavenumber',float)][:self.trans_n_cols]
+			self._trans_dtype = np.dtype([('upper_id',int),('lower_id',int), ('einstein_A', float), ('wavenumber',float)][:self.trans_n_cols])
 		return self._trans_dtype
 	
 	@property
@@ -266,19 +266,19 @@ class ExomolDatasetHolder:
 	def transition_states_dtype(self) -> list[tuple[str,Any]]:
 		states_dtype = self.states_dtype
 		
-		lower_state_dtype = tuple((x, y[1]) for x,y in zip(self.lower_state_names, states_dtype))
-		upper_state_dtype = tuple((x, y[1]) for x,y in zip(self.upper_state_names, states_dtype))
+		lower_state_dtype = tuple((x, y) for x,y in zip(self.lower_state_names, (z[0].type for z in states_dtype.fields.values())))
+		upper_state_dtype = tuple((x, y) for x,y in zip(self.upper_state_names, (z[0].type for z in states_dtype.fields.values())))
 		
-		dtype = [
+		dtype = np.dtype([
 			('einstein_A', float),
 			('wavenumber', float),
 			*lower_state_dtype,
 			*upper_state_dtype,
-		]
+		])
 		return dtype
 	
 	@property
-	def line_data_non_broadening_dtype(self) -> list[tuple[str,Any]]:
+	def line_data_non_broadening_dtype_spec(self) -> list[tuple[str,Any]]:
 		return [
 			('spec_line_intensity', float), # Spectral line intensity (calculated from other properties)
 			('wavenumber', float), # wavenumber of line center
@@ -292,11 +292,11 @@ class ExomolDatasetHolder:
 	@property
 	def line_data_dtype(self) -> list[tuple[str,Any]]:
 	
-		dtype = [
-			*self.line_data_non_broadening_dtype,
+		dtype = np.dtype([
+			*self.line_data_non_broadening_dtype_spec,
 			*tuple((f'gamma_{bg_name}', float) for bg_name in self.broad_gas_names),
 			*tuple((f'n_{bg_name}', float) for bg_name in self.broad_gas_names),
-		]
+		])
 		
 		return dtype
 	
@@ -400,7 +400,7 @@ class ExomolDatasetHolder:
 						quantum_number_strings = split_line[4:]
 						Jpp = int(Jpp)
 					
-						ts_dtype_dict = dict(self.transition_states_dtype)
+						ts_dtype_dict = dict((x,y[0].type) for x,y in self.transition_states_dtype.fields.items())
 						quantum_numbers = []
 						for (name, value_string) in zip(self.possible_qn_sets[code][1:], quantum_number_strings):
 							type_converter = ts_dtype_dict[name]
@@ -416,7 +416,7 @@ class ExomolDatasetHolder:
 	
 	@property
 	def partition_function_dtype(self) -> list[tuple[str,Any]]:
-		return [('T',float), ('Q',float)]
+		return np.dtype([('T',float), ('Q',float)])
 		
 	@property
 	def partition_function(self) -> np.ndarray:
@@ -490,7 +490,7 @@ class ExomolDatasetHolder:
 		#lower_state_mask = np.zeros((self.states.size,), dtype=bool)
 		#upper_state_mask = np.zeros((self.states.size,), dtype=bool)
 		
-		_lgr.info(f'Transition states are: {" ".join([x[0] for x in self.transition_states_dtype])}')
+		_lgr.info(f'Transition states are: {" ".join([x for x in self.transition_states_dtype.names])}')
 		states = self.states # local handle for faster access hopefully
 		calc_wavenumber_flag = self.trans_n_cols < 4
 		
@@ -549,8 +549,8 @@ class ExomolDatasetHolder:
 		
 		Q_ref = self.partition_function_at(T_ref)
 		
-		non_broad_names = tuple(x[0] for x in self.line_data_non_broadening_dtype)
-		trans_states_col_names = tuple(x[0] for x in self.transition_states_dtype)
+		non_broad_names = tuple(x[0] for x in self.line_data_non_broadening_dtype_spec)
+		trans_states_col_names = tuple(x for x in self.transition_states_dtype.names)
 		cols_from_trans_states = [x for x in non_broad_names if x in trans_states_col_names]
 		
 		broad_var_names_list = [[f'gamma_{bg_name}', f'n_{bg_name}'] for bg_name in self.broad_gas_names] # broadening coefficent names in order of broadeing gas names

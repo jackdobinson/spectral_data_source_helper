@@ -70,3 +70,8 @@ c2_cgs               : float    = c_light_cgs * h_planck_cgs / k_boltzmann_cgs  
 
 N_avogadro           : float    = 6.02214129E+23                                 # mol^{-1}             Avogadro's number, number of items in one mole
 
+STANDARD_ISOTOPE_ALIASES = {
+	'H' : '1H',
+	'D' : '2H',
+	'O' : '16O',
+}

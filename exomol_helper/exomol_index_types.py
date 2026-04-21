@@ -4,7 +4,6 @@ what data is actually held in the exomol databases.
 """
 
 import dataclasses as dc
-import re
 import functools
 from typing import Any
 import json
@@ -16,6 +15,7 @@ import numpy as np
 import exomol_helper.qn_set_manager
 import exomol_helper.broad_file_manager
 import exomol_helper.utils.fetch as fetch
+import exomol_helper.utils.cfmt as cfmt
 
 from exomol_helper.cfg.const import (
 	EXOMOL_URL_PREFIX,
@@ -29,31 +29,10 @@ from exomol_helper.cfg.const import (
 
 from exomol_helper.cfg.log import pkg_logger as _lgr
 
-
-C_FMT_STR_WIDTH_PATTERN = re.compile(r'%(\d*)')
-
 class ExomolIsotopeDefNotFoundError(Exception):
 	pass
 
-def cfmt_str_to_type(fmt_str):
-	width = int(C_FMT_STR_WIDTH_PATTERN.search(fmt_str)[1])
-	if 's' in fmt_str:
-		#return str
-		return f'U{width}'
-	elif 'e' in fmt_str:
-		return float
-	elif 'f' in fmt_str:
-		return float
-	elif 'g' in fmt_str:
-		return float
-	elif 'd' in fmt_str:
-		return int
-	else:
-		return None
 
-def cfmt_str_to_width(fmt_str):
-	match = C_FMT_STR_WIDTH_PATTERN.search(fmt_str)
-	return int(match[1])
 
 def mol_formula_to_api_mol(mol_formula):
 	if mol_formula[-1] == '+':
@@ -124,16 +103,16 @@ class ExomolStatesInfo:
 		for esf in self.states_file_fields:
 			dtype.append((
 				esf.name,
-				cfmt_str_to_type(esf.cfmt)
+				cfmt.str_to_type(esf.cfmt)
 			))
 		_lgr.debug(f'{dtype=}')
-		return dtype
+		return np.dtype(dtype)
 		
 	def get_states_field_widths(self):
 		widths = []
 		for esf in self.states_file_fields:
 			widths.append((
-				cfmt_str_to_width(esf.cfmt)
+				cfmt.str_to_width(esf.cfmt)
 			))
 		_lgr.debug(f'{widths=}')
 		return widths
