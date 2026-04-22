@@ -1,6 +1,6 @@
 
 from pathlib import Path
-from typing import NamedTuple, Annotated, get_origin, get_args, Union
+from typing import NamedTuple, Annotated, get_origin, get_args, Union, Generator, Callable, Literal
 import urllib
 import dataclasses as dc
 
@@ -17,6 +17,10 @@ from ..cfg.const import (
 	EXOMOL_CACHE,
 )
 
+import logging
+_lgr = logging.getLogger(__name__)
+_lgr.setLevel(logging.INFO)
+
 
 HITRAN_PF_URL_FMT = 'https://www.hitran.org/data/Q/q{global_id}.txt'
 HITRAN_160_PAR_FILE_API_URL_FMT = "https://hitran.org/lbl/api?iso_ids_list={global_id}&head=False&fixwidth=0"
@@ -26,6 +30,19 @@ HITRAN_API_URL_FMT = "https://hitran.org/lbl/api?iso_ids_list={global_id}&head=F
 HITRAN_INDEX = None
 
 HITRAN_PF_DATA = None
+
+HITRAN_ISO_ID_FROM_SINGLE_CHAR_MAP = {0:10,'A':11,'B':12}
+HITRAN_ISO_ID_TO_SINGLE_CHAR_MAP = dict((v,k) for k,v in HITRAN_ISO_ID_FROM_SINGLE_CHAR_MAP.items())
+
+# Some broadening parameters we get when downloading them are not the correct data (but are surrounded by good data).
+# Therefore, use these to detect those cases and set broadening parameters to NANs for the bad lines.
+HITRAN_BAD_BROADENER_LINE_STARTS : dict[int,str] = { # global id : tuple of bad starting strings
+	85 : (' 51',),
+	95 : ('1  ', ' 28'),
+	131: (' 23', '   '),
+	153: (' 22', '0 02'),
+	157: (' 5 ', ' 53'),
+}
 
 class HitranLineDataFiles(NamedTuple):
 	par_file : Path
@@ -116,10 +133,10 @@ class Hitran160Record(NamedTuple):
 			cls, 
 			fpath : Path, 
 			chunk_size : int = 1_000,
-		):
+	):
 		
 		# Account for `iso_id` values greater than 9 when only have a single digit to use
-		mutator = lambda it: (x if i!=1 else {0:10,'A':11,'B':12}.get(x,x) for i,x in enumerate(it))
+		mutator = lambda it: (x if i!=1 else HITRAN_ISO_ID_FROM_SINGLE_CHAR_MAP.get(x,x) for i,x in enumerate(it))
 		
 		return exomol_helper.utils.read.load_line_records_into_structured_array_by_chunks(
 			fpath,
@@ -127,6 +144,24 @@ class Hitran160Record(NamedTuple):
 			widths=tuple(cls.widths().values()),
 			mutator=mutator
 		)
+	
+	@classmethod
+	def iter_structured_array_from(
+			cls, 
+			fpath : Path, 
+			chunk_size : int = 1_000,
+	) -> Generator[np.ndarray]:
+		
+		# Account for `iso_id` values greater than 9 when only have a single digit to use
+		mutator = lambda it: (x if i!=1 else HITRAN_ISO_ID_FROM_SINGLE_CHAR_MAP.get(x,x) for i,x in enumerate(it))
+		
+		yield from exomol_helper.utils.read.iter_line_records_via_structured_array_chunk(
+			fpath,
+			cls.dtype(),
+			widths=tuple(cls.widths().values()),
+			mutator=mutator
+		)
+	
 
 @dc.dataclass
 class HitranDatasetHolder:
@@ -135,6 +170,7 @@ class HitranDatasetHolder:
 	# private attributes
 	_pf_data_file : None | Path = None
 	_pf_data : None | np.ndarray = None
+	_broadener_line_mutator : Literal[dc.MISSING] | None | Callable[[str],None | str] = dc.field(default_factory=lambda : dc.MISSING)
 	_broadener_files : None | dict[str, Path] = None
 	_broadeners : None | dict[str, np.ndarray] = None
 	_linedata_file : None | Path = None
@@ -164,7 +200,7 @@ class HitranDatasetHolder:
 		if self._broadener_files is None:
 			self._broadener_files = dict()
 			for j, broadener in enumerate(isotopologue.hitran_broadeners):
-				print(f'Fetching "{broadener}" [{j}/{len(isotopologue.hitran_broadeners)} %] [{100*j/len(isotopologue.hitran_broadeners):6.2f}] broadening data for {self.d.iso_formula=}')
+				_lgr.info(f'Fetching "{broadener}" [{j}/{len(isotopologue.hitran_broadeners)}] [{100*j/len(isotopologue.hitran_broadeners):6.2f} %] broadening data for {self.d.iso_formula=}')
 				broad_pars = [x+broadener for x in isotopologue.hitran_broadener_pars]
 				broad_url = HITRAN_API_URL_FMT.format(global_id=self.d.global_id, par_list=','.join(broad_pars))
 				
@@ -184,24 +220,48 @@ class HitranDatasetHolder:
 						# Have run out of API queries for today
 						bfp = None
 				
-				if bfp is not None:
+				if bfp is not None and bfp.lstat().st_size != 0:
 					self._broadener_files[broadener] = bfp
 		return self._broadener_files
 	
 	@property
+	def broadener_names(self) -> tuple[str,...]:
+		return self.broadener_files.keys()
+	
+	@property
+	def broadener_pars(self) -> dict[str,tuple[str,...]]:
+		return dict((broadener,[x+broadener for x in isotopologue.hitran_broadener_pars]) for broadener in self.broadener_names)
+	
+	@property
+	def broadener_dtypes(self) -> dict[str, np.dtype]:
+		bpd = self.broadener_pars
+		return dict((broadener,np.dtype([(x,float) for x in bpd[broadener]])) for broadener in self.broadener_names)
+	
+	@property
+	def broadener_line_mutator(self) -> Callable[[str], None | str]:
+		if self._broadener_line_mutator is dc.MISSING:
+			if self.d.global_id in HITRAN_BAD_BROADENER_LINE_STARTS:
+				bad_line_start_info = tuple((len(x),x) for x in HITRAN_BAD_BROADENER_LINE_STARTS[self.d.global_id])
+				self._broadener_line_mutator = lambda s: 'nan,nan,nan\n' if any(s[:n] == x for n,x in bad_line_start_info) else None
+			else:
+				self._broadener_line_mutator = None
+		return self._broadener_line_mutator
+		
+	@property
 	def broadeners(self) -> dict[str,np.ndarray]:
 		if self._broadeners is None:
 			self._broadeners = dict()
+			broad_dtypes = self.broadener_dtypes
+			
 			for j, (broadener, broadener_file) in enumerate(self.broadener_files.items()):
-				print(f'Loading "{broadener}" [{j}/{len(self.broadener_files)} %] [{100*j/len(self.broadener_files):6.2f}] broadening data for {self.d.iso_formula=} {self.d.global_id=} from {broadener_file.name=}')
-				broad_pars = [x+broadener for x in isotopologue.hitran_broadener_pars]
-				broad_dtype = np.dtype([(x,float) for x in broad_pars])
+				_lgr.info(f'Loading "{broadener}" [{j}/{len(self.broadener_files)}] [{100*j/len(self.broadener_files):6.2f} %] broadening data for {self.d.iso_formula=} {self.d.global_id=} from {broadener_file.name=}')
 				
 				broad_data = exomol_helper.utils.read.load_line_records_into_structured_array_by_chunks(
 					broadener_file,
-					dtype=broad_dtype,
+					dtype=broad_dtypes[broadener],
 					delim=',',
-					mutator=lambda it: (x if not x.startswith('#') else 'nan' for x in it)
+					mutator=lambda it: (x if not x.startswith('#') else 'nan' for x in it),
+					line_mutator = self.broadener_line_mutator
 				)
 				
 				if len(broad_data) > 0:
@@ -232,7 +292,7 @@ class HitranDatasetHolder:
 	@property
 	def linedata(self) -> np.ndarray:
 		if self._linedata is None:
-			print(f'Loading linedata for {self.d.iso_formula=} {self.d.global_id=}')
+			_lgr.info(f'Loading linedata for {self.d.iso_formula=} {self.d.global_id=} [HITRAN ID: {self.d.global_id=}]')
 			if self.linedata_file != '':
 				self._linedata = Hitran160Record.structured_array_from(
 					self.linedata_file,
@@ -240,7 +300,66 @@ class HitranDatasetHolder:
 			else:
 				self._linedata = np.empty((0,), Hitran160Record.dtype())
 		return self._linedata
-
+	
+	
+	def iter_broadener_chunk(self, broadener : str, chunk_size : int =1_000_000) -> Generator[np.ndarray]:
+		assert broadener in self.broadener_names, f"Unknown broadener '{broadener}' for {self.d.iso_formula} [HITRAN ID: {self.d.global_id=}]"
+		
+		broad_file = self.broadener_files[broadener]
+		broad_dtype = self.broadener_dtypes[broadener]
+		
+		yield from exomol_helper.utils.read.iter_line_records_via_structured_array_chunk(
+			broad_file,
+			dtype=broad_dtype,
+			delim=',',
+			mutator=lambda it: (x if not x.startswith('#') else 'nan' for x in it),
+			line_mutator = self.broadener_line_mutator,
+			chunk_size=chunk_size,
+		)
+	
+	
+	def iter_broadeners_chunk(self, chunk_size : int = 1_000_000) -> Generator[np.ndarray]:
+		# Build combined structured array for all valid broadeners
+		bpd = self.broadener_pars
+		broad_pars = []
+		for broadener, bp in bpd.items():
+			broad_pars += list(bp)
+		
+		broad_dtype = np.dtype([(x,float) for x in broad_pars])
+		
+		chunk = np.empty((chunk_size,), dtype=broad_dtype)
+		
+		single_broad_chunk_gens = dict((x, (bpd[x], self.iter_broadener_chunk(x, chunk_size=chunk_size))) for x in bpd.keys())
+		
+		gen_exhausted = dict((x,False) for x in bpd.keys())
+		
+		while True:
+			chunk.fill(np.nan)
+			result_chunk_size = 0
+			
+			for broadener, (bp, sbc_gen) in single_broad_chunk_gens.items():
+				if not gen_exhausted[broadener]:
+					_lgr.info(f'Loading "{broadener}" broadening data for {self.d.iso_formula} [HITRAN_ID: {self.d.global_id}]')# from {self.broadener_files[broadener].name=}')
+					try:
+						sb_chunk = next(sbc_gen)
+					except StopIteration:
+						gen_exhausted[broadener] = True
+					else:
+						sb_chunk_size = sb_chunk.shape[0]
+						result_chunk_size = max(result_chunk_size, sb_chunk_size)
+						chunk[bp][:sb_chunk_size] = sb_chunk
+			
+			if not all(gen_exhausted.values()):
+				yield chunk[:result_chunk_size]
+			else:
+				return
+	
+	
+	def iter_linedata_chunk(self, chunk_size : int = 1_000_000) -> Generator[np.ndarray]:
+		yield from Hitran160Record.iter_structured_array_from(
+			self.linedata_file,
+			chunk_size=chunk_size,
+		)
 
 
 
@@ -248,42 +367,58 @@ class HitranDatasetHolder:
 def build_index():
 	global HITRAN_INDEX
 	
+	_lgr.info('Building HITRAN index...')
+	
 	HITRAN_INDEX = dict()
 	isotopologue.download_hitran_isotope_data()
+	_lgr.info('    Isotopologue data loaded.')
 
 	# Load HITRAN index
 	#HITRAN_INDEX = HitranIsotope.structured_array_from(isotopologue.HITRAN_ISO_TABLE)
 	for rec in HitranIsotope.record_array_from(isotopologue.HITRAN_ISO_TABLE):
 		HITRAN_INDEX.setdefault(str(rec.mol_formula).strip(), dict())[str(rec.iso_formula).strip()] = HitranDatasetHolder(HitranIsotope(*rec))
 	#print(f'{HITRAN_INDEX=}')
+	_lgr.info('    HITRAN index built.')
 
 
-def load_partition_function_data():
+def fetch_partition_function_data():
+	_lgr.info('Fetching partition function data...')
 	# Load partition function data for each isotopologue
 	for mol_formula, isos in HITRAN_INDEX.items():
 		for iso_formula, ds_holder in isos.items():
+			_lgr.info(f'    Partition function data for {mol_formula} {iso_formula} [HITRAN_ID: {ds_holder.d.global_id}]')
 			#ds_holder.pf_data
 			ds_holder.pf_data_file
+	_lgr.info('    Partition function data fetched.')
 
-def load_line_data():
+def fetch_line_data():
+	_lgr.info('Fetching line data...')
 	for mol_formula, isos in HITRAN_INDEX.items():
 		for iso_formula, ds_holder in isos.items():
+			_lgr.info(f'    Line data for {mol_formula} {iso_formula} [HITRAN_ID: {ds_holder.d.global_id}]')
 			#ds_holder.linedata
 			ds_holder.linedata_file
+	_lgr.info('    Line data fetched.')
 
-def load_broadening_data():
+def fetch_broadening_data():
+	_lgr.info('Fetching broadening data...')
+	
 	for mol_formula, isos in HITRAN_INDEX.items():
 		for iso_formula, ds_holder in isos.items():
-			ds_holder.broadeners
+			_lgr.info(f'    Broadening data for {mol_formula} {iso_formula} [HITRAN_ID: {ds_holder.d.global_id}]')
+			ds_holder.broadener_files
+			#for chunk in ds_holder.iter_broadeners_chunk(chunk_size=1_000_000):
+			#	print(chunk)
+	_lgr.info('    Broadening data fetched.')
 
 
 build_index()
 
-load_partition_function_data()
+fetch_partition_function_data()
 
-load_line_data()
+fetch_line_data()
 
-load_broadening_data()
+fetch_broadening_data()
 
 
 

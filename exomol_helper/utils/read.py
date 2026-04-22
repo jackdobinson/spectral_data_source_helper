@@ -38,6 +38,7 @@ def load_line_records_into_structured_array(
 		widths : None | int | tuple[int,...] = None,
 		delim : None | str = '',
 		mutator : None | Callable[[Iterable],Iterable] = None,
+		line_mutator : None | Callable[[str], None|str] = None
 ) -> np.ndarray:
 	if isinstance(fpaths, (str, Path)):
 		fpaths = (fpaths,)
@@ -55,9 +56,16 @@ def load_line_records_into_structured_array(
 	
 	result = np.empty((np.prod(shape),), dtype=dtype)
 	
-
+	i=0
+	
 	if delim != '':
-		for i, v in enumerate(iter_line_records(fpaths)):
+		for v in iter_line_records(fpaths):
+		
+			if line_mutator is not None:
+				mutated_result = line_mutator(v)
+				if mutated_result is not None:
+					v = mutated_result
+		
 			ss = v.split(delim)
 			if len(ss) == 0 or len(v)==0:
 				break
@@ -74,12 +82,18 @@ def load_line_records_into_structured_array(
 			except Exception as e:
 				_lgr.error(f'{i=} {v[:80]=}')
 				raise e
+			i+=1
 	
 	elif widths is not None:
 		cwidths = tuple(sum(widths[:i]) for i in range(len(widths)))
-		for i, x in enumerate(iter_line_records(fpaths)):
+		for x in iter_line_records(fpaths):
 			if len(x) ==0:
 				break
+			
+			if line_mutator is not None:
+				mutated_result = line_mutator(x)
+				if mutated_result is not None:
+					x = mutated_result
 			
 			if i%PROGRESS_INTERVAL == 0:
 				progress_lgr.info(f'{i=} ##{x}')
@@ -94,6 +108,7 @@ def load_line_records_into_structured_array(
 			except Exception as e:
 				_lgr.error(f'{i=} {x[:80]=}')
 				raise e
+			i+=1
 	
 	else:
 		raise RuntimeError('Must specify exactly a single one of `widths` and `delim`')
@@ -114,6 +129,7 @@ def load_line_records_into_structured_array_by_chunks(
 		delim : None | str = '',
 		chunk_size : int = 1_000_000,
 		mutator : None | Callable[[Iterable],Iterable] = None,
+		line_mutator : None | Callable[[str], None|str] = None
 ) -> np.ndarray:
 	if isinstance(fpaths, (str, Path)):
 		fpaths = (fpaths,)
@@ -130,10 +146,16 @@ def load_line_records_into_structured_array_by_chunks(
 
 	if delim != '':
 		for v in iter_line_records(fpaths):
+			
+			if line_mutator is not None:
+				mutated_result = line_mutator(v)
+				if mutated_result is not None:
+					v = mutated_result
+			
 			ss = v.split(delim)
 			if len(ss) == 0 or len(v)==0:
 				break
-				
+			
 			if i >= mm:
 				results.append(chunk)
 				chunk = np.empty((chunk_size,), dtype=dtype)
@@ -160,6 +182,12 @@ def load_line_records_into_structured_array_by_chunks(
 		for x in iter_line_records(fpaths):
 			if len(x) ==0:
 				break
+			
+			if line_mutator is not None:
+				mutated_result = line_mutator(x)
+				if mutated_result is not None:
+					x = mutated_result
+			
 			if i >= mm:
 				results.append(chunk)
 				chunk = np.empty((chunk_size,), dtype=dtype)
@@ -197,6 +225,7 @@ def iter_line_records_via_structured_array_chunk(
 		delim : None | str = '',
 		chunk_size : int = 1_000_000,
 		mutator : None | Callable[[Iterable],Iterable] = None,
+		line_mutator : None | Callable[[str], None|str] = None
 ) -> np.ndarray:
 	if isinstance(fpaths, (str, Path)):
 		fpaths = (fpaths,)
@@ -212,6 +241,12 @@ def iter_line_records_via_structured_array_chunk(
 
 	if delim != '':
 		for v in iter_line_records(fpaths):
+			
+			if line_mutator is not None:
+				mutated_result = line_mutator(v)
+				if mutated_result is not None:
+					v = mutated_result
+			
 			ss = v.split(delim)
 			if len(ss)==0 or len(v)==0:
 				break
@@ -239,6 +274,12 @@ def iter_line_records_via_structured_array_chunk(
 	elif widths is not None:
 		cwidths = tuple(sum(widths[:i]) for i in range(len(widths)))
 		for x in iter_line_records(fpaths):
+			
+			if line_mutator is not None:
+				mutated_result = line_mutator(x)
+				if mutated_result is not None:
+					x = mutated_result
+			
 			if len(x) == 0:
 				break
 			if i >= mm:
