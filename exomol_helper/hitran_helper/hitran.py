@@ -1,6 +1,6 @@
 
 from pathlib import Path
-from typing import NamedTuple, Annotated, get_origin, get_args, Union, Generator, Callable, Literal
+from typing import NamedTuple, Annotated, get_origin, get_args, Union, Generator, Callable, Literal, Self
 import urllib
 import dataclasses as dc
 
@@ -200,7 +200,7 @@ class HitranDatasetHolder:
 		if self._broadener_files is None:
 			self._broadener_files = dict()
 			for j, broadener in enumerate(isotopologue.hitran_broadeners):
-				_lgr.info(f'Fetching "{broadener}" [{j}/{len(isotopologue.hitran_broadeners)}] [{100*j/len(isotopologue.hitran_broadeners):6.2f} %] broadening data for {self.d.iso_formula=}')
+				_lgr.debug(f'Fetching "{broadener}" [{j}/{len(isotopologue.hitran_broadeners)}] [{100*j/len(isotopologue.hitran_broadeners):6.2f} %] broadening data for {self.d.iso_formula=}')
 				broad_pars = [x+broadener for x in isotopologue.hitran_broadener_pars]
 				broad_url = HITRAN_API_URL_FMT.format(global_id=self.d.global_id, par_list=','.join(broad_pars))
 				
@@ -254,7 +254,7 @@ class HitranDatasetHolder:
 			broad_dtypes = self.broadener_dtypes
 			
 			for j, (broadener, broadener_file) in enumerate(self.broadener_files.items()):
-				_lgr.info(f'Loading "{broadener}" [{j}/{len(self.broadener_files)}] [{100*j/len(self.broadener_files):6.2f} %] broadening data for {self.d.iso_formula=} {self.d.global_id=} from {broadener_file.name=}')
+				_lgr.debug(f'Loading "{broadener}" [{j}/{len(self.broadener_files)}] [{100*j/len(self.broadener_files):6.2f} %] broadening data for {self.d.iso_formula=} {self.d.global_id=} from {broadener_file.name=}')
 				
 				broad_data = exomol_helper.utils.read.load_line_records_into_structured_array_by_chunks(
 					broadener_file,
@@ -301,6 +301,13 @@ class HitranDatasetHolder:
 				self._linedata = np.empty((0,), Hitran160Record.dtype())
 		return self._linedata
 	
+	def cache_data(self) -> Self:
+		# Cache all data for this dataset
+		self.pf_data_file
+		self.linedata_file
+		self.broadener_files
+	
+		return self
 	
 	def iter_broadener_chunk(self, broadener : str, chunk_size : int =1_000_000) -> Generator[np.ndarray]:
 		assert broadener in self.broadener_names, f"Unknown broadener '{broadener}' for {self.d.iso_formula} [HITRAN ID: {self.d.global_id=}]"
@@ -412,13 +419,24 @@ def fetch_broadening_data():
 	_lgr.info('    Broadening data fetched.')
 
 
+def fetch_all_data():
+	_lgr.info('Fetching all data...')
+	
+	for mol_formula, isos in HITRAN_INDEX.items():
+		for iso_formula, ds_holder in isos.items():
+			_lgr.info(f'    Fetching all data for {mol_formula} {iso_formula} [HITRAN_ID: {ds_holder.d.global_id}]')
+			ds_holder.cache_data()
+	_lgr.info('    All data fetched.')
+
 build_index()
 
-fetch_partition_function_data()
+#fetch_partition_function_data()
 
-fetch_line_data()
+#fetch_line_data()
 
-fetch_broadening_data()
+#fetch_broadening_data()
+
+fetch_all_data()
 
 
 

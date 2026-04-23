@@ -2,13 +2,16 @@
 
 import json
 import dataclasses as dc
-from typing import Any, Generator
+from typing import Any, Generator, Literal
 import datetime as dt
+from pathlib import Path
 
 import numpy as np
 
 from .utils import fetch
 from .utils import read
+from .utils import structured_array
+from .utils import time
 
 from .cfg.const import (
 	EXOMOL_API_URL_FMT,
@@ -20,7 +23,7 @@ from .cfg.const import (
 	T_ref,
 )
 
-from exomol_helper.calc.spec_line_intensity import spec_line_intensity_lte
+from exomol_helper.calc.spec_line_intensity import spec_line_intensity_lte, exp_c2_Epp, one_minus_exp_c2_nu
 
 import exomol_helper.qn_set_manager
 import exomol_helper.broad_file_manager
@@ -287,6 +290,8 @@ class ExomolDatasetHolder:
 			('E\'', float), # upper state energy (in cm^{-1})
 			('g_tot"', int), # lower state degeneracy
 			('g_tot\'', int), # upper state degeneracy
+			('spec_line_factor_exp_E', float), # Part of the spectral line intensity
+			('spec_line_factor_one_minus_exp_wavenumber', float), # Part of the spectral line intensity
 		]
 	
 	@property
@@ -454,6 +459,33 @@ class ExomolDatasetHolder:
 			_lgr.info(f'file fetched into "{fpath}"')
 	
 	
+	def trans_file_precidence(self, fpath : str | Path):
+		if isinstance(fpath, str):
+			fpath = Path(fpath)
+		
+		if fpath.suffix == '.bz2':
+			trans_fpath = fpath
+		else:
+			trans_fpath = fpath.withn_name(fpath.name+'.bz2')
+		
+		# Paths at the top will be chosen first
+		possible_fpaths = (
+			trans_fpath.with_suffix('.bin'),
+			trans_fpath.with_suffix('.npy'),
+			trans_fpath.with_suffix('.npz'),
+			trans_fpath.with_suffix(''),
+			trans_fpath.with_suffix('.bz2'),
+		)
+		
+		print(f'{trans_fpath=}')
+		for new_fpath in possible_fpaths:
+			print(f'{new_fpath=}')
+			if new_fpath.exists():
+				print('EXISTS')
+				return new_fpath
+			print('DOES NOT EXIST')
+			
+	
 	def iter_transitions(
 			self,
 			chunk_size : int = 1_000_000,
@@ -464,8 +496,16 @@ class ExomolDatasetHolder:
 		_lgr.debug(f'Starting reading transitions at {dt_start}')		
 		_lgr.debug(f'Transition files have {self.trans_n_cols} columns.')
 		
-		trans_urls = (fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True) for x in self.api_transition_urls[trans_files_slice])
-		yield from read.iter_line_records_via_structured_array_chunk(
+		trans_urls = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
+		#_lgr.info("Using the following transition urls:")
+		#for z in self.api_transition_urls[trans_files_slice]:
+		#for z in (fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True) for x in self.api_transition_urls[trans_files_slice]):
+		#	_lgr.info(f'    {z}')
+			
+		#raise NotImplementedError('TESTING')
+		
+		#yield from read.iter_line_records_via_structured_array_chunk(
+		yield from read.files_via_structured_array_chunk(
 				trans_urls,
 				dtype=self.trans_dtype,
 				delim=None,
@@ -474,6 +514,71 @@ class ExomolDatasetHolder:
 		
 		dt_end = dt.datetime.now()
 		_lgr.debug(f'Finished reading transitions at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
+	
+	def convert_transition_files_to_fmt(
+			self, 
+			fmt : Literal['.npy', '.bin'],
+			chunk_size : int = 1_000_000,
+			trans_files_slice : slice = slice(None),
+		):
+		dt_start = dt.datetime.now()
+		_lgr.info(f'Starting to convert transition files at {dt_start}')		
+		_lgr.info(f'Transition files have {self.trans_n_cols} columns.')
+		
+		trans_urls = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
+		#_lgr.info("Using the following transition urls:")
+		#for z in self.api_transition_urls[trans_files_slice]:
+		#for z in (fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True) for x in self.api_transition_urls[trans_files_slice]):
+		#	_lgr.info(f'    {z}')
+			
+		#raise NotImplementedError('TESTING')
+		
+		for old_trans_fpath in trans_urls:
+			new_trans_fpath = old_trans_fpath.with_suffix(fmt) if old_trans_fpath.suffix == '.bz2' else old_trans_fpath.with_name(old_trans_fpath.name + fmt)
+			_lgr.info(f'Converting {old_trans_fpath.name=} to {new_trans_fpath.name}')
+			
+			if new_trans_fpath.exists():
+				_lgr.info('Converted file already exists, skipping...')
+				continue
+			
+			dt_split_1 = dt.datetime.now()
+			
+			try:
+				if fmt == '.bin':
+					with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
+						
+						for trans_chunk in read.iter_line_records_via_structured_array_chunk(
+								old_trans_fpath,
+								dtype=self.trans_dtype,
+								delim=None,
+								chunk_size=chunk_size,
+						):
+							f.write(trans_chunk)
+				elif fmt == '.npy':
+					result = []
+					for trans_chunk in read.iter_line_records_via_structured_array_chunk(
+								old_trans_fpath,
+								dtype=self.trans_dtype,
+								delim=None,
+								chunk_size=chunk_size,
+						):
+							result.append(trans_chunk)
+					np.concatenate(result).save(new_trans_fpath)
+				else:
+					raise RuntimeError(f'Unknown format "{fmt}" to convert transition files to. ')
+			except:
+				# Remove the new file if anything goes wrong
+				if new_trans_fpath.exists():
+					new_trans_fpath.unlink()
+				raise
+			
+			dt_split_2 = dt.datetime.now()
+			
+			_lgr.info(f'Converted {old_trans_fpath.name=} to {new_trans_fpath.name}. Took {(dt_split_2-dt_split_1).total_seconds()} s.')
+			
+			
+		dt_end = dt.datetime.now()
+		_lgr.info(f'Finished converting transitions at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
 	
 	
 	def iter_transition_states(
@@ -497,11 +602,15 @@ class ExomolDatasetHolder:
 		n_transitions_processed = 0
 		
 		for i, trans_chunk in enumerate(self.iter_transitions(chunk_size=chunk_size, trans_files_slice=trans_files_slice)):
+			dt_split_1 = dt.datetime.now()
 			chunk_slice = slice(None, trans_chunk.size)
-			#print(f'{trans_chunk.size=} {chunk_slice=} {chunk_size=} {lower_state_indices.shape=}')
+			_lgr.info(f'{trans_chunk.size=} {chunk_slice=} {chunk_size=} {lower_state_indices.shape=}')
+			
+			# NOTE: This loop is a bit of a bottleneck
 			
 			# NOTE: self.state['StateID'] is always one more than the index. Therefore can
 			# quickly select indices based upon the state ID numbers in `trans_chunk`
+			
 			lower_state_indices[chunk_slice] = trans_chunk['lower_id'] - 1
 			upper_state_indices[chunk_slice] = trans_chunk['upper_id'] - 1
 			
@@ -510,12 +619,14 @@ class ExomolDatasetHolder:
 			
 			trans_states_chunk['einstein_A'][chunk_slice] = trans_chunk['einstein_A'][chunk_slice]
 			
+			
 			if calc_wavenumber_flag:
 				trans_states_chunk['wavenumber'] = (trans_states_chunk['E\''] - trans_states_chunk['E"']) # Energy is in cm^{-1} so can just subtract
 			else:
 				trans_states_chunk['wavenumber'][chunk_slice] = trans_chunk['wavenumber']
 			
 			n_transitions_processed += trans_chunk.size
+			dt_split_2 = dt.datetime.now()
 			
 			if progress_lgr.is_ready():
 				dt_split = dt.datetime.now()
@@ -524,10 +635,13 @@ class ExomolDatasetHolder:
 				trans_remaining = (self.n_transitions - n_transitions_processed)
 				frac_complete = n_transitions_processed / self.n_transitions
 				est_time_remaining = dt.timedelta(seconds=trans_remaining / trans_per_sec)
-				est_time_remaining_str = f'{est_time_remaining.days}D {est_time_remaining.seconds//3600}H {(est_time_remaining.seconds %3600)//60}M {est_time_remaining.seconds%60}s'
+				est_time_remaining_str = time.delta_str(est_time_remaining)
 				est_completion_dt = dt_start + est_time_remaining
 				
-				progress_lgr.info(f'{i=} Processed {n_transitions_processed}/{self.n_transitions} transitions [{100*frac_complete: 8.4f} %] in {dt_split_delta} s [{trans_per_sec: 8.2E} trans/s]  Est. time remaining {est_time_remaining_str}. Est. completion at {est_completion_dt}')
+				dt_last_iter_delta = (dt_split_2 - dt_split_1)
+				dt_last_iter_delta_str = time.delta_str(dt_last_iter_delta)
+				
+				progress_lgr.info(f'{i=} Processed {n_transitions_processed}/{self.n_transitions} transitions [{100*frac_complete: 8.4f} %] in {dt_split_delta} s [{trans_per_sec: 8.2E} trans/s]  Est. time remaining {est_time_remaining_str}. Est. completion at {est_completion_dt}. Last iteration took {dt_last_iter_delta_str}')
 		
 			yield trans_states_chunk[chunk_slice]
 		
@@ -570,6 +684,16 @@ class ExomolDatasetHolder:
 				line_data_chunk['einstein_A'][chunk_slice],
 				line_data_chunk['wavenumber'][chunk_slice],
 				out = line_data_chunk['spec_line_intensity'][chunk_slice],
+			)
+			
+			line_data_chunk["spec_line_factor_exp_E"][chunk_slice] = exp_c2_Epp(
+				T_ref,
+				line_data_chunk['E"'][chunk_slice]
+			)
+			
+			line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][chunk_slice] = one_minus_exp_c2_nu(
+				T_ref,
+				line_data_chunk['wavenumber'][chunk_slice]
 			)
 			
 			# Broadening coefficients must be matched to valid combinations of quantum numbers
@@ -626,5 +750,110 @@ class ExomolDatasetHolder:
 		return np.interp(T, self.partition_function['T'], self.partition_function['Q'])
 	
 	
+	def get_line_and_continuum_fnames_at_temp(
+			self,
+			T_arr : np.ndarray,
+			temp_fmt : str = 'T{}',
+	) -> tuple[tuple[str,...],tuple[str,...],tuple[str,...]]:
+		contbins_fnames = tuple(self.datafile_prefix + '_' + temp_fmt.format(T) +'.contbins' for T in T_arr)
+		continuum_fnames = tuple(self.datafile_prefix + '_' + temp_fmt.format(T) +'.continuum' for T in T_arr)
+		stronglines_fnames = tuple(self.datafile_prefix + '_' + temp_fmt.format(T) +'.stronglines' for T in T_arr)
+		
+		return (contbins_fnames, continuum_fnames, stronglines_fnames)
+	
+	def iter_lines_and_continuum_at_temp(
+			self,
+			T : np.ndarray,
+			continuum_bin_edges : np.ndarray,
+			continuum_line_intensity_cutoff : float = 1E-24,
+			chunk_size : int = 1_000_000,
+			trans_files_slice : slice = slice(None),
+	) -> Generator[tuple[np.ndarray, np.ndarray, tuple[np.ndarray], np.ndarray]]:
+		
+		T = T[:,None]
+		n_temps = T.size
+		
+		Q_ratio =  self.partition_function_at(T_ref) / self.partition_function_at(T)
+		
+		assert np.all(continuum_bin_edges[:-1] < continuum_bin_edges[1:]), "`continuum_bin_edges` must be monotonically increasing"
+		
+		cont_n_bin_edges = continuum_bin_edges.size
+		cont_n_bins = cont_n_bin_edges-1
+		
+		continuum_contribution = np.zeros((T.size, cont_n_bins), dtype=float)
+		
+		bin_indices = np.empty((T.size, chunk_size,), dtype=int)
+		bin_indices_valid = np.empty((T.size, chunk_size,), dtype=bool)
+		
+		wavenumber_gt_zero_mask = np.zeros((chunk_size,), dtype=bool)
+		
+		one_minus_exp_c2_nu_ratio = np.empty((T.size, chunk_size,), dtype=float)
+		
+		
+		line_strength_mask = np.empty((T.size, chunk_size,), dtype=bool)
+		line_strengths_at_temp = np.empty((T.size, chunk_size,), dtype=float)
+		
+		n_strong_lines = np.zeros((T.size,), dtype=int)
+		n_weak_lines = np.zeros((T.size,), dtype=int)
+		n_weak_lines_in_continuum = np.zeros((T.size,), dtype=int)
+		n_weak_lines_outside_continuum = np.zeros((T.size,), dtype=int)
+	
+		
+		for line_data_chunk in self.iter_line_data(chunk_size=chunk_size, trans_files_slice=trans_files_slice):
+			chunk_slice = slice(None, line_data_chunk.size)
+			
+			wavenumber_gt_zero_mask[chunk_slice] = line_data_chunk['wavenumber'] > 0
+			one_minus_exp_c2_nu_ratio.fill(1.0)
+			
+			one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]] = (
+				one_minus_exp_c2_nu(T_ref,line_data_chunk['wavenumber'][wavenumber_gt_zero_mask[chunk_slice]]) 
+				/ one_minus_exp_c2_nu(T, line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][wavenumber_gt_zero_mask[chunk_slice]])
+			)
+			
+			line_strengths_at_temp[:, chunk_slice] = (
+				line_data_chunk['spec_line_intensity'] 
+					* Q_ratio 
+					* (exp_c2_Epp(T,line_data_chunk['E"'])/line_data_chunk["spec_line_factor_exp_E"]) 
+					* one_minus_exp_c2_nu_ratio[:,chunk_slice]
+			)
+			
+			line_strength_mask[:,chunk_slice] = line_strengths_at_temp[chunk_slice] > continuum_line_intensity_cutoff
+			
+			n_strong_lines[...] = np.count_nonzero(line_strength_mask[chunk_slice], axis=1)
+			n_weak_lines[...] = line_data_chunk.size - n_strong_lines
+			
+			progress_lgr.info(f'{np.min(line_data_chunk['wavenumber'])=} {np.max(line_data_chunk['wavenumber'])=}')
+			progress_lgr.info(f'{np.min(line_strengths_at_temp[chunk_slice])=} {np.max(line_strengths_at_temp[chunk_slice])=}')
+			progress_lgr.info(f'{n_strong_lines=} {n_weak_lines=}')
+			
+			# Place continuum lines into continuum
+			# PLACEHOLDER IMPLEMENTATION FOR NOW
+			for j in range(n_temps):
+				bin_indices[j,:n_weak_lines[j]] = np.searchsorted(continuum_bin_edges, line_data_chunk['wavenumber'][chunk_slice][~line_strength_mask[j,chunk_slice]])
+				bin_indices[j] -= 1 # the result of the above will be between [0,continuum_bin_edges.size], therefore subtracting one will give correct bins indices.
+				
+				bin_indices_valid[j,:n_weak_lines[j]] = (bin_indices[j,:n_weak_lines[j]] >= 0) & (bin_indices[j,:n_weak_lines[j]] < continuum_contribution.shape[1])
+				bin_indices_valid[j,n_weak_lines[j]:] = False
+			
+			n_weak_lines_in_continuum[...] = np.sum(bin_indices_valid, axis=1)
+			n_weak_lines_outside_continuum[...] = n_weak_lines - n_weak_lines_in_continuum
+			progress_lgr.info(f'{n_weak_lines_in_continuum=} {n_weak_lines_outside_continuum=}')
+			
+			# This sets the continuum contribution from the weak lines that are inside the continuum wavelength range
+			for j in range(n_temps):
+				continuum_contribution[j,bin_indices[j,bin_indices_valid[j]]] += line_strengths_at_temp[j,chunk_slice][~line_strength_mask[j,chunk_slice]][bin_indices_valid[j,:n_weak_lines[j]]]
+			
+			progress_lgr.info('Continuum contribution calculated')
+			
+			
+			yield n_strong_lines, n_weak_lines_in_continuum, (line_data_chunk[line_strength_mask[j,chunk_slice]] for j in range(n_temps)), continuum_contribution
+			progress_lgr.info('strong lines and continuum data outputted')
+			
+				
+			
+			
+			
+			
+			
 	
 	

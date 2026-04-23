@@ -12,6 +12,17 @@ from exomol_helper.cfg.const import (
 
 #from exomol_helper.cfg.log import pkg_logger as _lgr
 
+def exp_c2_Epp(
+		temp : np.ndarray,
+		lower_state_energy : np.ndarray,
+):
+	return np.exp(-c2_cgs * lower_state_energy / temp)
+
+def one_minus_exp_c2_nu(
+		temp : np.ndarray,
+		wavenumber : np.ndarray,
+):
+	return (1 - np.exp(-c2_cgs * wavenumber / temp))
 
 
 def spec_line_intensity_lte(
@@ -21,7 +32,7 @@ def spec_line_intensity_lte(
 		upper_state_degeneracy : np.ndarray,
 		einstein_A : np.ndarray,
 		wavenumber : np.ndarray,
-		out: None | np.ndarray, # put the output in this array if it is not None
+		out: None | np.ndarray = None, # put the output in this array if it is not None
 ) -> np.ndarray:
 	"""
 	Compute spectral line intensity at local thermal equilibrium.

@@ -118,7 +118,7 @@ class ChunkedFileDownloader:
 					_lgr.warn(f'Could not open url. Error: {str(e)}')
 					return
 				case _:
-					raise e
+					raise
 		
 		self.content_length = int(self.response.headers.get('Content-Length', -1))
 		if skip_if_content_length is not None and (skip_if_content_length == self.content_length):
@@ -140,16 +140,17 @@ class ChunkedFileDownloader:
 	
 	def download(self) -> Generator[bytes|str]:
 		self.status.set('executing')
-		last_reported_size = -1E30 # very negative number so we report the first size value
+		#last_reported_size = -1E30 # very negative number so we report the first size value
 		self.accumulated_size = 0
 		i = 0
 		
 		while (size_of_current_chunk := len(chunk := self.get_chunk(self.response))) > 0:
 			
 			
-			if PROGRESS_INTERVAL_MEM_UNIT is not None and ((self.accumulated_size - last_reported_size) >= (PROGRESS_INTERVAL_MEM_UNIT*MEM_UNIT_BYTES)):
+			#if PROGRESS_INTERVAL_MEM_UNIT is not None and ((self.accumulated_size - last_reported_size) >= (PROGRESS_INTERVAL_MEM_UNIT*MEM_UNIT_BYTES)):
+			if progress_lgr.is_ready():
 				progress_lgr.info(f'Fetching chunk {i}. Chunk is {size_of_current_chunk/MEM_UNIT_BYTES:8.2f} {MEM_UNIT_NAME}. Fetched {self.accumulated_size/MEM_UNIT_BYTES:8.2f} {MEM_UNIT_NAME} so far...')
-				last_reported_size = self.accumulated_size
+				#last_reported_size = self.accumulated_size
 			
 			self.accumulated_size += size_of_current_chunk
 			self.status.set('paused')
@@ -243,26 +244,24 @@ def file(
 				real_fpath = Path(to_fpath)
 				to_fpath = real_fpath.with_stem('~'+real_fpath.stem)
 			
-			try:
-				_lgr.debug(f'Writing to "{to_fpath}"')
-				with open(to_fpath, write_mode) as f:
-					if prefix is not None:
-						f.write(prefix)
+			_lgr.info(f'Writing to "{to_fpath}"')
+			with open(to_fpath, write_mode) as f:
+				if prefix is not None:
+					f.write(prefix)
+				try:
 					for chunk in file_chunk_downloader.download():
 						f.write(chunk)
+				except:
+					file_chunk_downloader.status = 'failed'
+					# delete file if something goes wrong
+					if remove_file_on_failure:
+						to_fpath.unlink()
+					raise
 			
-			except Exception as e:
-				file_chunk_downloader.status = 'failed'
-				# delete file if something goes wrong
-				if remove_file_on_failure:
-					to_fpath.unlink()
-				raise e
-			
-			else:
-				# If no error, move the working file to the desired file path
-				if use_working_file:
-					_lgr.debug('Moving working file')
-					to_fpath.replace(real_fpath)
+			# If no error, move the working file to the desired file path
+			if use_working_file:
+				_lgr.debug('Moving working file')
+				to_fpath.replace(real_fpath)
 			
 			return
 		
