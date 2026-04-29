@@ -2,7 +2,6 @@
 from pathlib import Path
 from typing import Generator, Callable, Iterable#, Any
 import bz2
-import datetime as dt
 
 import numpy as np
 
@@ -11,18 +10,95 @@ from exomol_helper.cfg.log import pkg_logger as _lgr
 import exomol_helper.utils.dtype
 import exomol_helper.utils.structured_array
 
-import logging
+from .module_var import ModuleVar
+from ..progress_tracker.base import BaseProgressTracker
+from ..progress_tracker.chunk import ChunkProgressTracker
+
+#import logging
 
 PROGRESS_INTERVAL = 100_000
 
+
+module_progress_sink : ModuleVar = ModuleVar(
+	lambda x: print(str(x), end='\r', flush=True)
+	#lambda x: progress_lgr.info(str(x))
+)
+
+
+
+
+
+def iter_lines_fast(
+		f, 
+		chunk_size=10*1024*1024,
+):
+	i = 0
+	m = 0
+	n = 0
+	b = bytearray(b'\0'*chunk_size)
+	s = memoryview(b)
+	
+	n = f.readinto1(s[i:])
+	m = i+n
+	
+	while n > 0:
+		lines = b[:m].split(b'\n')
+		yield from ((len(x),x) for x in lines[:-1])
+		i = len(lines[-1])
+		s[:i] = lines[-1]
+		n = f.readinto1(s[i:])
+		m = i+n
+		
+	return m, b[:m]
+
+
+def iter_lines_fast_bz2(
+		f, 
+		chunk_size=10*1024*1024,
+):
+	half_chunk = chunk_size // 2
+	i = 0
+	m = 0
+	n = 0
+	b = bytearray(b'\0'*chunk_size)
+	s = memoryview(b)
+	
+	a = bytearray(b'\0'*chunk_size)
+	r = memoryview(a)
+	
+	decomp = bz2.BZ2Decompressor()
+	
+	n = f.readinto1(s)
+	
+	while n > 0:
+		x = decomp.decompress(b[:n], max_length=half_chunk)
+		m = i+len(x)
+		r[i:m] = x
+		lines = a[:m].split(b'\n')
+		yield from ((len(x),x) for x in lines[:-1])
+		i = len(lines[-1])
+		r[:i] = lines[-1]
+				
+		while not decomp.needs_input and not decomp.eof:
+			x = decomp.decompress(b'', max_length=half_chunk)
+			m = i+len(x)
+			r[i:m] = x
+			lines = a[:m].split(b'\n')
+			yield from ((len(x),x) for x in lines[:-1])
+			i = len(lines[-1])
+			r[:i] = lines[-1]
+		
+		n = f.readinto1(s)
+	
+	return
+
+
 def iter_line_records(
 		fpaths : str | Path | list[str | Path],
-		return_total_bytes_read = False,
-) -> Generator[str | tuple[int,str]]:
+		encoding : None | str = 'utf8',
+) -> Generator[tuple[int,str] | tuple[int,bytes]]:
 	if isinstance(fpaths, (str, Path)):
 		fpaths = (fpaths,)
-	
-	total_bytes_read = 0
 	
 	for fpath in fpaths:
 		_lgr.info(f'Starting to read {fpath=}')
@@ -30,64 +106,22 @@ def iter_line_records(
 		if isinstance(fpath, str):
 			fpath = Path(fpath)
 		
-		if fpath.suffix == '.bz2':
-			opener = lambda x: bz2.open(x, 'rb')
-			decoder = lambda x: x.decode('ascii')
-		else:
-			opener = lambda x: open(x, 'r')
+		if encoding is None:
 			decoder = lambda x: x
-		
-		if return_total_bytes_read:
-			with opener(fpath) as f:
-				for line in f:
-					total_bytes_read += len(line)# technically this may not give exact values due to differences in encoding
-					yield total_bytes_read, decoder(line)
 		else:
-			with opener(fpath) as f:
-				for line in f:
-					yield decoder(line)
+			decoder = lambda x: x.decode(encoding)
+		
+		if fpath.suffix == '.bz2':
+			line_iterator = iter_lines_fast_bz2
+		else:
+			line_iterator = iter_lines_fast
+		
+		with open(fpath, 'rb') as f:
+			for n_bytes, line in line_iterator(f):
+				yield n_bytes, decoder(line)
 		
 		_lgr.info(f'Finished reading {fpath=}')
 
-
-def load_line_records_into_structured_array(
-		fpaths : str | Path | list[str | Path],
-		dtype : np.dtype,
-		shape : None | int | tuple[int,...] = None,
-		widths : None | int | tuple[int,...] = None,
-		delim : None | str = '',
-		mutator : None | Callable[[Iterable],Iterable] = None,
-		line_mutator : None | Callable[[str], None|str] = None
-) -> np.ndarray:
-	
-	if shape is None:
-		return load_line_records_into_structured_array_by_chunks(fpaths, dtype, widths, delim, mutator=mutator, line_mutator=line_mutator)
-	else:
-		if isinstance(shape, int):
-			shape = (shape,)
-		return next(iter_line_records_via_structured_array_chunk(fpaths, dtype, widths, delim, shape[0], shape[1:], mutator, line_mutator))
-	
-
-
-
-
-def load_line_records_into_structured_array_by_chunks(
-		fpaths : str | Path | list[str | Path],
-		dtype : np.dtype,
-		widths : None | int | tuple[int,...] = None,
-		delim : None | str = '',
-		chunk_size : int = 1_000_000,
-		shape_tail : tuple[int,...] = tuple(),
-		mutator : None | Callable[[Iterable],Iterable] = None,
-		line_mutator : None | Callable[[str], None|str] = None
-) -> np.ndarray:
-	
-	results = []
-	
-	for chunk in iter_line_records_via_structured_array_chunk(fpaths, dtype, widths, delim, chunk_size, shape_tail, mutator, line_mutator):
-		results.append(np.array(chunk))
-	
-	return np.concatenate(results)
 
 
 def iter_line_records_via_structured_array_chunk(
@@ -98,7 +132,8 @@ def iter_line_records_via_structured_array_chunk(
 		chunk_size : int = 1_000_000,
 		shape_tail : tuple[int,...] = tuple(),
 		mutator : None | Callable[[Iterable],Iterable] = None,
-		line_mutator : None | Callable[[str], None|str] = None
+		line_mutator : None | Callable[[str], None|str] = None,
+		progress_tracker : None | BaseProgressTracker = None,
 ) -> np.ndarray:
 	if isinstance(fpaths, (str, Path)):
 		fpaths = (fpaths,)
@@ -119,18 +154,10 @@ def iter_line_records_via_structured_array_chunk(
 	i=0
 	nn = 0
 	mm = chunk_size
+	total_bytes = 0
 
-	last_total_bytes_read = 0
-	delta_bytes_read = 0
-	
-	dt_start = dt.datetime.now()
-	dt_last_split = dt_start
-
-	for total_bytes_read, x in iter_line_records(fpaths, return_total_bytes_read=True):
-		#print(f'{x=}')
-		
-		
-		
+	for n_bytes, x in iter_line_records(fpaths):
+		total_bytes += n_bytes
 		
 		if len(x)==0:
 			continue
@@ -145,57 +172,66 @@ def iter_line_records_via_structured_array_chunk(
 			continue
 		
 		if i >= mm:
+			if progress_tracker is not None:
+				progress_tracker.set(i, total_bytes)
 			yield chunk
 			nn+=chunk_size
 			mm+=chunk_size
-			
-		#if i%PROGRESS_INTERVAL == 0:
-		if progress_lgr.is_ready():
-			delta_bytes_read = total_bytes_read - last_total_bytes_read
-			
-			dt_split = dt.datetime.now()
-			dt_elapsed_delta = dt_split - dt_start
-			dt_elapsed_str = f'{dt_elapsed_delta.days}D {dt_elapsed_delta.seconds//3600}H {(dt_elapsed_delta.seconds %3600)//60}M {dt_elapsed_delta.seconds%60}s'
-			dt_elapsed_sec = dt_elapsed_delta.total_seconds()
-			
-			dt_rolling_sec = (dt_split - dt_last_split).total_seconds()
-			
-			total_bytes_per_sec = total_bytes_read / dt_elapsed_sec
-			rolling_bytes_per_sec = delta_bytes_read / dt_rolling_sec
-			
-			byte_amounts_and_unit = ((1,'kb'), (1000,'kb'), (1_000_000, 'Mb'), (1_000_000_000, 'Gb'))
-			
-			byte_unit_info = [byte_amounts_and_unit[0],byte_amounts_and_unit[0]]
-			for byte_amount, byte_unit in byte_amounts_and_unit:
-				if total_bytes_per_sec > byte_amount:
-					byte_unit_info[0] = (byte_amount, byte_unit)
-				if rolling_bytes_per_sec > byte_amount:
-					byte_unit_info[1] = (byte_amount, byte_unit)
-				
-			if progress_lgr.level == logging.INFO:
-				print(f'line_no : {i}')
-				print(f'Elapsed Time: {dt_elapsed_str}')
-				print(f'Total bytes per second: {total_bytes_per_sec/byte_unit_info[0][0]:8.3f} {byte_unit_info[0][1]}/s')
-				print(f'Rolling bytes per second: {rolling_bytes_per_sec/byte_unit_info[1][0]:8.3f} {byte_unit_info[1][1]}/s')
-				progress_lgr.info(f'####:{x}')
-			
-			dt_last_split = dt_split
-			last_total_bytes_read = total_bytes_read
 			
 		
 		if mutator is not None:
 			ss = mutator(ss)
 		
 		try:
-			#chunk[i-nn] = tuple(dtype[j][1](x) if not isinstance(dtype[j][1],str) else x for j,x in enumerate(ss))
-			#chunk[i-nn] = tuple(dtype[j].type(x) for j,x in enumerate(ss))
 			chunk[i-nn] = exomol_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
 		except:
 			_lgr.error(f'{i=} {x[:80]=}')
 			raise
 		i+=1
 	
+	if progress_tracker is not None:
+		progress_tracker.set(i, total_bytes)
 	yield chunk[:i-nn]
+
+
+def load_line_records_into_structured_array(
+		fpaths : str | Path | list[str | Path],
+		dtype : np.dtype,
+		shape : None | int | tuple[int,...] = None,
+		widths : None | int | tuple[int,...] = None,
+		delim : None | str = '',
+		mutator : None | Callable[[Iterable],Iterable] = None,
+		line_mutator : None | Callable[[str], None|str] = None,
+		progress_tracker : None | BaseProgressTracker = None,
+) -> np.ndarray:
+	
+	if shape is None:
+		return load_line_records_into_structured_array_by_chunks(fpaths, dtype, widths, delim, mutator=mutator, line_mutator=line_mutator, progress_tracker=progress_tracker)
+	else:
+		if isinstance(shape, int):
+			shape = (shape,)
+		return next(iter_line_records_via_structured_array_chunk(fpaths, dtype, widths, delim, shape[0], shape[1:], mutator, line_mutator, progress_tracker=progress_tracker))
+
+
+def load_line_records_into_structured_array_by_chunks(
+		fpaths : str | Path | list[str | Path],
+		dtype : np.dtype,
+		widths : None | int | tuple[int,...] = None,
+		delim : None | str = '',
+		chunk_size : int = 1_000_000,
+		shape_tail : tuple[int,...] = tuple(),
+		mutator : None | Callable[[Iterable],Iterable] = None,
+		line_mutator : None | Callable[[str], None|str] = None,
+		progress_tracker : None | BaseProgressTracker = None,
+) -> np.ndarray:
+	
+	results = []
+	
+	for chunk in iter_line_records_via_structured_array_chunk(fpaths, dtype, widths, delim, chunk_size, shape_tail, mutator, line_mutator, progress_tracker=progress_tracker):
+		results.append(np.array(chunk))
+	
+	return np.concatenate(results)
+
 
 
 
@@ -210,14 +246,19 @@ def files_via_structured_array_chunk(
 		mutator : None | Callable[[Iterable],Iterable] = None,
 		line_mutator : None | Callable[[str], None|str] = None
 ):
+	_lgr.info('files_via_structured_array_chunk(...)')
+	
+	read_progress_tracker = ChunkProgressTracker(
+		module_progress_sink.get(), 
+		rate_limit_timeout = 0.5, 
+		chunk_element_name='Record'
+	)
+
 	if isinstance(fpaths, (str, Path)):
 		fpaths = (fpaths,)
 	
-	dt_start = dt.datetime.now()
-	dt_last_split = dt_start
-	
 	for fpath in fpaths:
-		print(f'{fpath=}')
+		_lgr.debug(f'{fpath=}')
 		
 		ftype = fpath.suffix
 		
@@ -233,72 +274,60 @@ def files_via_structured_array_chunk(
 				chunk_size,
 				shape_tail,
 				mutator,
-				line_mutator
+				line_mutator,
+				progress_tracker=read_progress_tracker,
 			)
 		elif ftype in ('.bin',):
 			
-			last_total_bytes_read = 0
-			
 			chunk_number = 0
+			
 			f = exomol_helper.utils.structured_array.StructuredArrayFile(fpath, 'rb')
 			result = f.read(count = chunk_size)
 			
-			
-			
 			while result.size > 0:
 				chunk_number += 1
-				print(f'{result.size=}')
-				
-				
-				
-				if True or progress_lgr.is_ready():
-					total_bytes_read = f.tell()
-					delta_bytes_read = total_bytes_read - last_total_bytes_read
-					
-					dt_split = dt.datetime.now()
-					dt_elapsed_delta = dt_split - dt_start
-					dt_elapsed_str = f'{dt_elapsed_delta.days}D {dt_elapsed_delta.seconds//3600}H {(dt_elapsed_delta.seconds %3600)//60}M {dt_elapsed_delta.seconds%60}s'
-					dt_elapsed_sec = dt_elapsed_delta.total_seconds()
-					
-					dt_rolling_sec = (dt_split - dt_last_split).total_seconds()
-					
-					total_bytes_per_sec = total_bytes_read / dt_elapsed_sec
-					rolling_bytes_per_sec = delta_bytes_read / dt_rolling_sec
-					
-					byte_amounts_and_unit = ((1,'kb'), (1000,'kb'), (1_000_000, 'Mb'), (1_000_000_000, 'Gb'))
-					
-					byte_unit_info = [byte_amounts_and_unit[0],byte_amounts_and_unit[0],byte_amounts_and_unit[0]]
-					for byte_amount, byte_unit in byte_amounts_and_unit:
-						if total_bytes_per_sec > byte_amount:
-							byte_unit_info[0] = (byte_amount, byte_unit)
-						if rolling_bytes_per_sec > byte_amount:
-							byte_unit_info[1] = (byte_amount, byte_unit)
-						if total_bytes_read > byte_amount:
-							byte_unit_info[2] = (byte_amount, byte_unit)
-						
-					if progress_lgr.level == logging.INFO:
-						print(f'chunk_number : {chunk_number}')
-						print(f'Elapsed Time: {dt_elapsed_str}')
-						print(f'Total bytes per second: {total_bytes_per_sec/byte_unit_info[0][0]:8.3f} {byte_unit_info[0][1]}/s')
-						print(f'Rolling bytes per second: {rolling_bytes_per_sec/byte_unit_info[1][0]:8.3f} {byte_unit_info[1][1]}/s')
-						print(f'Total bytes {total_bytes_read/byte_unit_info[2][0]:8.3f} {byte_unit_info[2][1]}')
-					
-					dt_last_split = dt_split
-					last_total_bytes_read = total_bytes_read
-				
-				
+				read_progress_tracker.set(f.n_records_read, f.tell())
 				
 				yield result
 				result = f.read(count = chunk_size)
+				
+				
+				
 		elif ftype in ('.npy',):
 			array = np.load(fpath)
 			
 			i = 0
 			n = chunk_size
+			n_records_read = 0
 			while n < array.size:
+				n_records_read =+ n
+				read_progress_tracker.set(n_records_read, array.nbytes)
 				yield array[i:n]
-				i+= chunk_size
+				i += chunk_size
 				n += chunk_size
+		
+		elif ftype in ('.npz',):
+			npz_file = np.load(fpath)
+			
+			arrays = tuple(npz_file.values())
+			
+			i = np.zeros(len(arrays), dtype=int)
+			n = np.ones(len(arrays), dtype=int) * chunk_size
+			s = np.array([a.shape[0] for a in arrays], dtype=int)
+			
+			m = np.zeros(len(arrays), dtype=int)
+			b = np.array([a.nbytes for a in arrays], dtype=int)
+			
+			while np.any(n < s):
+				m += (n<s) * chunk_size
+				read_progress_tracker.set(m, b)
+				
+				yield tuple(a[_i : _n] if _n < _s else a[0:0] for a, _i, _n, _s in zip(arrays, i, n, s))
+				i += chunk_size
+				n += chunk_size
+			
+			
+			
 		else:
 			raise RuntimeError(f'Unknown format to read "{ftype}"')
 

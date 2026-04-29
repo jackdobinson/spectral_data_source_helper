@@ -66,8 +66,9 @@ class ChunkedFileDownloader:
 			chunk_size : None | int = DEFAULT_CHUNK_SIZE, 
 			encoding : str = 'ascii', 
 			proxy : None | dict[str,str] = None,
-			error_code_action : dict[int,Literal['ignore','warning','error']] = dict(),
+			error_code_action : dict[int | Literal['timeout'],Literal['ignore','warning','error']] = dict(),
 			skip_if_content_length : None | int = None, # If not `None` will compare the size on disk with the 'Content-Length' in the header and skip if they are equal.
+			timeout : None | int = 2, # timeout in seconds to wait for response
 	):
 		self.url = url
 		self.chunk_size = chunk_size
@@ -107,7 +108,7 @@ class ChunkedFileDownloader:
 		opener = urllib.request.build_opener(*handlers)
 		
 		try:
-			self.response = opener.open(url)
+			self.response = opener.open(url, timeout=timeout)
 		except urllib.error.HTTPError as e:
 			self.status.set('failed')
 			eca = error_code_action.get(e.code, 'error')
@@ -119,6 +120,20 @@ class ChunkedFileDownloader:
 					return
 				case _:
 					raise
+		except urllib.error.URLError as e:
+			self.status.set('failed')
+			if isinstance(e.__cause__, TimeoutError) or isinstance(e.__context__, TimeoutError):
+				eca = error_code_action.get('timeout', 'error')
+				match eca:
+					case 'ignore':
+						return
+					case 'warning':
+						_lgr.warn(f'Could not open url. Error: {str(e)}')
+						return
+					case _:
+						raise
+			else:
+				raise
 		
 		self.content_length = int(self.response.headers.get('Content-Length', -1))
 		if skip_if_content_length is not None and (skip_if_content_length == self.content_length):
@@ -190,6 +205,7 @@ def file(
 		chunk_size : None | int = DEFAULT_CHUNK_SIZE, 
 		skip_if_size_on_disk : bool = True,
 		remove_file_on_failure : bool = True, # If possible, remove the file if the download failed for any reason
+		timeout : None | int = 2, # Number of seconds to wait for internet
 ) -> None | bytes | str:
 	"""
 	## ARGUMENTS ##
@@ -224,6 +240,7 @@ def file(
 				or (not to_fpath.exists())
 			) else to_fpath.lstat().st_size
 		),
+		timeout=timeout
 	)
 	
 	if not file_chunk_downloader.status.is_finished():
@@ -269,9 +286,9 @@ def file(
 			empty_str = b'' if encoding is None else ''
 			try:
 				return (empty_str if prefix is None else prefix) + empty_str.join(file_chunk_downloader.download())
-			except Exception as e:
+			except:
 				file_chunk_downloader.status = 'failed'
-				raise e
+				raise
 
 	elif file_chunk_downloader.status == 'failed':
 		_lgr.error(f'Could not download {url}')

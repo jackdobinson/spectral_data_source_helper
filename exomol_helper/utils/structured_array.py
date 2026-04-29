@@ -1,5 +1,5 @@
 
-from typing import Literal
+from typing import Literal, Self
 from pathlib import Path
 import bz2
 
@@ -7,24 +7,40 @@ import numpy as np
 
 import exomol_helper.utils.dtype
 
+from .module_var import ModuleVar
+
 HDR_FIND_FIRST_BRACE_WITHIN = 32
 HDR_MAX_SIZE = 1024 * 1024
 BRACE_BYTE =  b'{'[0]
 
 
+module_progress_sink : ModuleVar = ModuleVar(
+	lambda x: print(str(x), end='\r', flush=True)
+	#lambda x: progress_lgr.info(str(x))
+)
+
 
 
 class StructuredArrayFile:
+	class_writable_modes : tuple[str,...] = ('wb', 'rb+', 'ab')
+	class_readable_modes : tuple[str,...] = ('rb', 'rb+')
 	
-	def __init__(self, fpath, mode : None | Literal['wb', 'rb'] = None):
+	def __init__(
+			self, 
+			fpath, mode : None | Literal['wb', 'rb'] = None,
+			
+	):
 		self.fpath = fpath
 		self.mode = None
 		self.fhdl = None
+		self.header_written = None
+		self.n_records_read = 0
+		self.n_records_written = 0
 		
 		if mode is not None:
 			self.open(mode)
 	
-	def __enter__(self):
+	def __enter__(self) -> Self:
 		return self
 	
 	def __exit__(self, type, value, traceback):
@@ -33,7 +49,7 @@ class StructuredArrayFile:
 	def __del__(self):
 		self.close()
 	
-	def open(self, mode : Literal['wb', 'rb']):
+	def open(self, mode : Literal['wb', 'rb']) -> Self:
 		assert mode in ('wb', 'rb'), "`mode` must be one of ('wb', 'rb')"
 		
 		if self.fhdl is not None:
@@ -42,11 +58,18 @@ class StructuredArrayFile:
 		
 		self.mode = mode
 		
+		if self.mode in self.class_readable_modes:
+			self.n_records_read = 0
+		
+		if self.mode in self.class_writable_modes:
+			self.n_records_written = 0
+		
 		if self.fpath.suffix == '.bz2':
 			self.fhdl = bz2.open(self.fpath, self.mode)
 		else:
 			self.fhdl = open(self.fpath, self.mode)
 		
+		self.header_byte_end = 0
 		self.header_written = False
 		self.arr_dtype = None
 		
@@ -55,24 +78,31 @@ class StructuredArrayFile:
 	def close(self):
 		if self.fhdl is not None:
 			self.fhdl.close()
+		self.header_written = None
 	
-	def write_header(self, arr : np.ndarray | np.dtype):
+	def write_header(self, arr : np.ndarray | np.dtype, encoding : str = 'ascii'):
 		if isinstance(arr, np.dtype):
-			self.fhdl.write(exomol_helper.utils.dtype.to_string(arr).encode('ascii'))
+			self.fhdl.write(exomol_helper.utils.dtype.to_string(arr).encode(encoding))
 		else:
-			self.fhdl.write(exomol_helper.utils.dtype.to_string(arr.dtype).encode('ascii'))
+			self.fhdl.write(exomol_helper.utils.dtype.to_string(arr.dtype).encode(encoding))
 		
 		self.header_written = True
+		self.header_byte_end = self.tell()
 		
 	def write(self, arr : np.ndarray):
-		assert self.mode == 'wb', "Must have `mode` == 'wb' to write"
+		assert self.mode in self.class_writable_modes, f"Must have `mode` in {self.class_writable_modes} to write"
 		
 		if not self.header_written:
 			self.write_header(arr)
 		
 		arr.tofile(self.fhdl)
+		self.n_records_written += arr.size
+		
+		return
 	
-	def read_dtype(self):
+	
+	def read_header(self, encoding : str = 'ascii'):
+		#print('reading dtype', flush=True)
 		hdr_part = b''
 		
 		found_first_brace = False
@@ -90,17 +120,35 @@ class StructuredArrayFile:
 			hdr_part += self.fhdl.read(1)
 
 		if (hdr_part.count(b'{') == hdr_part.count(b'}')):
-			self.arr_dtype = exomol_helper.utils.dtype.from_string(hdr_part.decode('ascii'))
+			return hdr_part.decode(encoding)
 		else:
 			raise RuntimeError(f'Could not read header. Got "{hdr_part}"')
 	
-	def read(self, count : int = -1):
-		if self.arr_dtype is None:
-			self.read_dtype()
-		return np.fromfile(self.fhdl, dtype=self.arr_dtype, count=count)
 	
-	def tell(self):
+	def read(self, count : int = -1) -> np.ndarray:	
+		if self.arr_dtype is None:
+			self.arr_dtype = exomol_helper.utils.dtype.from_string(self.read_header())
+		
+		result = np.fromfile(self.fhdl, dtype=self.arr_dtype, count=count)
+		self.n_records_read += result.size
+		
+		return result
+	
+	def tell(self) -> int:
 		return self.fhdl.tell()
+	
+	def seek(self, offset : int, whence : int):
+		result = self.fhdl.seek(offset, whence)
+		
+		if self.header_written:
+			if self.tell() < self.header_byte_end:
+				self.header_written = False
+				self.header_byte_end = 0
+				self.seek(0,0)
+		
+		return result
+	
+	
 	
 	
 	

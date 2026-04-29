@@ -40,6 +40,8 @@ EXOMOL_TRANSITION_FILE_ENDINGS = (
 
 T_ref                : float    = 296.0                                          # K                    Reference temperature (Kelvin)
 P_ref                : float    = 1.0                                            # bar                  Reference pressure (bar)
+EXOMOL_T_ref         : float    = 296.0                                          # K                    Reference temperature (Kelvin)
+EXOMOL_P_ref         : float    = 1.0                                            # bar                  Reference pressure (bar)
 
 k_B                  : float    = 1.380649E-23                                   # J K^{-1}             Boltzmann constant
 k_boltzmann          : float    = 1.380649E-23                                   # J K^{-1}             Boltzmann constant
@@ -69,6 +71,9 @@ c2                   : float    = c_light * h_planck / k_boltzmann              
 c2_cgs               : float    = c_light_cgs * h_planck_cgs / k_boltzmann_cgs   # cm K                 Second radiation constant (cgs)
 
 N_avogadro           : float    = 6.02214129E+23                                 # mol^{-1}             Avogadro's number, number of items in one mole
+
+Dalton               : float    = 1.66053906892E-27                              # kg                   Dalton, 1/12th of mass of a carbon atom (also known as "unified atomic mass unit")
+Dalton_cgs           : float    = 1.66053906892E-24                              # g                    Dalton (cgs)
 
 STANDARD_ISOTOPE_ALIASES = {
 	'H' : '1H',

@@ -2,7 +2,7 @@
 
 import json
 import dataclasses as dc
-from typing import Any, Generator, Literal
+from typing import Any, Generator, Literal, ClassVar
 import datetime as dt
 from pathlib import Path
 
@@ -11,7 +11,6 @@ import numpy as np
 from .utils import fetch
 from .utils import read
 from .utils import structured_array
-from .utils import time
 
 from .cfg.const import (
 	EXOMOL_API_URL_FMT,
@@ -21,6 +20,7 @@ from .cfg.const import (
 	EXOMOL_TRANSITION_FILE_ENDINGS,
 	EXOMOL_API_INTERNAL_URL_START,
 	T_ref,
+	Dalton_cgs,
 )
 
 from exomol_helper.calc.spec_line_intensity import spec_line_intensity_lte, exp_c2_Epp, one_minus_exp_c2_nu
@@ -28,11 +28,12 @@ from exomol_helper.calc.spec_line_intensity import spec_line_intensity_lte, exp_
 import exomol_helper.qn_set_manager
 import exomol_helper.broad_file_manager
 
-from exomol_helper.cfg.log import progress_lgr
+#from exomol_helper.cfg.log import progress_lgr
 from exomol_helper.cfg.log import pkg_logger as _lgr
 
 from exomol_helper.datatypes import (
 	ExomolDatasetInfo,
+	BroadeningSourceCode,
 )
 
 from exomol_helper.exomol_index_types import (
@@ -63,12 +64,20 @@ class ExomolDatasetHolder:
 	_lower_state_names : None | tuple[str,...] = None
 	_upper_state_names : None | tuple[str,...] = None
 	_broad_gas_names : None | tuple[str,...] = None
+	_broad_names_by_gas : None | tuple[list[str,...],...] = None
+	_broad_dtype : None | list[tuple[str,np.dtype],...] = None
 	_default_broad_vals : None | dict[str,tuple[float,float]] = None
 	_fallback_broad_vals : None | tuple[float,float] = None
-	emergency_broad_vals : tuple[float,float] = (0.07, 0.5) # (gamma, n) to use when no other values are present (taken from PyExoCross)
+	emergency_broad_vals : ClassVar[tuple[float,float]] = (0.07, 0.5) # (gamma, n) to use when no other values are present (taken from PyExoCross)
 	_partition_function : None | np.ndarray = None
 	_broad_map : None | dict[str,dict[str,dict[tuple[Any,...],tuple[float,float]]]] = None
 	_possible_qn_sets : None | dict[str,list[str]] = None
+	_pseudo_continuum_contribution_dtype : None | np.dtype = None
+	_pseudo_continuum_contribution_dtype_list : None | list[tuple[str,Any],...] = None
+	
+	@property
+	def iso_mass_cgs(self) -> float:
+		return Dalton_cgs * self.isotope_def.isotopologue.mass_in_Da
 	
 	@property
 	def iso_path(self) -> str:
@@ -137,7 +146,9 @@ class ExomolDatasetHolder:
 	@property
 	def api_broad_urls(self) -> dict[str,str]:
 		if self._api_broad_urls is None:
+			#print(f'{self._api_broad_urls=}')
 			self._api_broad_urls = exomol_helper.broad_file_manager.search_broad_files_for(self.d.mol_formula, self.d.iso_slug)
+			#print(f'{self._api_broad_urls=}')
 		return self._api_broad_urls
 	
 	@property
@@ -184,12 +195,7 @@ class ExomolDatasetHolder:
 		if self._states is None:
 			dt_start = dt.datetime.now()
 			_lgr.info(f'Starting to load states at {dt_start}')
-			#self._states = read.load_line_records_into_structured_array(
-			#	[fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True) for x in self.api_states_urls],
-			#	dtype=self.states_dtype,
-			#	shape=self.states_shape,
-			#	delim=None
-			#)
+
 			states_url = self.api_states_urls[0]
 			if states_url.endswith('.bz2'):
 				states_numpy_fpath = (EXOMOL_CACHE / f'{self.api_states_urls[0]}').with_suffix('.npz')
@@ -217,7 +223,7 @@ class ExomolDatasetHolder:
 	@property
 	def trans_n_cols(self) -> int:
 		if self._trans_n_cols is None:
-			for aline in read.iter_line_records([fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=EXOMOL_CACHE,return_fpath=True)]):
+			for n_bytes, aline in read.iter_line_records([fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=EXOMOL_CACHE,return_fpath=True)]):
 				self._trans_n_cols = len(aline.split())
 				break
 		return self._trans_n_cols
@@ -248,7 +254,41 @@ class ExomolDatasetHolder:
 	def broad_gas_names(self) -> tuple[str,...]:
 		if self._broad_gas_names is None:
 			self._broad_gas_names = tuple(self.api_broad_urls.keys())
+			if 'self' not in self._broad_gas_names:
+				self._broad_gas_names = ('self', *self._broad_gas_names)
+			#print(f'{self._broad_gas_names=}')
 		return self._broad_gas_names
+	
+	@property
+	def broad_names_by_gas(self) -> tuple[list[str,...],...]:
+		if self._broad_names_by_gas is None:
+			self._broad_names_by_gas = tuple([f'gamma_{gas_name}', f'n_{gas_name}'] for gas_name in self.broad_gas_names)
+		return self._broad_names_by_gas
+	
+	@property
+	def broad_dtype(self) -> list[tuple[str,np.dtype],...]:
+		if self._broad_dtype is None:
+			self._broad_dtype = []
+			for broad_name_list in self.broad_names_by_gas:
+				self._broad_dtype.extend(((broad_name, np.dtype(float)) for broad_name in broad_name_list))
+		return self._broad_dtype
+	
+	@property
+	def broad_source_var_names(self) -> list[str,...]:
+		return [f'broad_source_{gas_name}' for gas_name in self.broad_gas_names]
+	
+	@property
+	def broad_source_dtype_list(self) -> list[tuple[str,np.dtype],...]:
+		"""
+		dtype for column `broad_source_<GAS>`, where `<GAS>` is the gas name.
+		
+		Values: 
+			* +1 means broadening parameters are from a *.broad file
+			* -1 means broadening parameters are from the default for the isotope-gas combo
+			* -2 means broadening parameters are the default for the gas
+			* -3 means the broadening parameters are the emergency values from ExomolDatasetHolder.emergency_broad_vals
+		"""
+		return [(bs_var_name,'i8') for bs_var_name in self.broad_source_var_names]
 	
 	@property
 	def default_broad_vals(self) -> dict[str,tuple[float,float]]:
@@ -299,8 +339,8 @@ class ExomolDatasetHolder:
 	
 		dtype = np.dtype([
 			*self.line_data_non_broadening_dtype_spec,
-			*tuple((f'gamma_{bg_name}', float) for bg_name in self.broad_gas_names),
-			*tuple((f'n_{bg_name}', float) for bg_name in self.broad_gas_names),
+			*self.broad_dtype,
+			*self.broad_source_dtype_list,
 		])
 		
 		return dtype
@@ -477,13 +517,13 @@ class ExomolDatasetHolder:
 			trans_fpath.with_suffix('.bz2'),
 		)
 		
-		print(f'{trans_fpath=}')
+		_lgr.debug(f'{trans_fpath=}')
 		for new_fpath in possible_fpaths:
-			print(f'{new_fpath=}')
+			_lgr.debug(f'{new_fpath=}')
 			if new_fpath.exists():
-				print('EXISTS')
+				_lgr.debug('EXISTS')
 				return new_fpath
-			print('DOES NOT EXIST')
+			_lgr.debug('DOES NOT EXIST')
 			
 	
 	def iter_transitions(
@@ -497,14 +537,7 @@ class ExomolDatasetHolder:
 		_lgr.debug(f'Transition files have {self.trans_n_cols} columns.')
 		
 		trans_urls = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
-		#_lgr.info("Using the following transition urls:")
-		#for z in self.api_transition_urls[trans_files_slice]:
-		#for z in (fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True) for x in self.api_transition_urls[trans_files_slice]):
-		#	_lgr.info(f'    {z}')
-			
-		#raise NotImplementedError('TESTING')
 		
-		#yield from read.iter_line_records_via_structured_array_chunk(
 		yield from read.files_via_structured_array_chunk(
 				trans_urls,
 				dtype=self.trans_dtype,
@@ -520,7 +553,7 @@ class ExomolDatasetHolder:
 			fmt : Literal['.npy', '.bin'],
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
-		):
+	):
 		dt_start = dt.datetime.now()
 		_lgr.info(f'Starting to convert transition files at {dt_start}')		
 		_lgr.info(f'Transition files have {self.trans_n_cols} columns.')
@@ -534,7 +567,8 @@ class ExomolDatasetHolder:
 		#raise NotImplementedError('TESTING')
 		
 		for old_trans_fpath in trans_urls:
-			new_trans_fpath = old_trans_fpath.with_suffix(fmt) if old_trans_fpath.suffix == '.bz2' else old_trans_fpath.with_name(old_trans_fpath.name + fmt)
+		
+			new_trans_fpath = old_trans_fpath.with_name(old_trans_fpath.name + fmt) if old_trans_fpath.suffix == '.trans' else old_trans_fpath.with_suffix(fmt)
 			_lgr.info(f'Converting {old_trans_fpath.name=} to {new_trans_fpath.name}')
 			
 			if new_trans_fpath.exists():
@@ -590,59 +624,44 @@ class ExomolDatasetHolder:
 		_lgr.info(f'Starting to get transition state information at {dt_start}')
 		
 		trans_states_chunk = np.empty((chunk_size,), dtype=self.transition_states_dtype)
-		lower_state_indices = np.zeros((chunk_size,), dtype=int)
-		upper_state_indices = np.zeros((chunk_size,), dtype=int)
-		#lower_state_mask = np.zeros((self.states.size,), dtype=bool)
-		#upper_state_mask = np.zeros((self.states.size,), dtype=bool)
+		
+		#lower_state_indices = np.zeros((chunk_size,), dtype=int)
+		#upper_state_indices = np.zeros((chunk_size,), dtype=int)
 		
 		_lgr.info(f'Transition states are: {" ".join([x for x in self.transition_states_dtype.names])}')
 		states = self.states # local handle for faster access hopefully
 		calc_wavenumber_flag = self.trans_n_cols < 4
-		
-		n_transitions_processed = 0
-		
+				
 		for i, trans_chunk in enumerate(self.iter_transitions(chunk_size=chunk_size, trans_files_slice=trans_files_slice)):
-			dt_split_1 = dt.datetime.now()
 			chunk_slice = slice(None, trans_chunk.size)
-			_lgr.info(f'{trans_chunk.size=} {chunk_slice=} {chunk_size=} {lower_state_indices.shape=}')
+			_lgr.debug(f'{trans_chunk.size=} {chunk_slice=} {chunk_size=}')
 			
 			# NOTE: This loop is a bit of a bottleneck
 			
 			# NOTE: self.state['StateID'] is always one more than the index. Therefore can
 			# quickly select indices based upon the state ID numbers in `trans_chunk`
 			
-			lower_state_indices[chunk_slice] = trans_chunk['lower_id'] - 1
-			upper_state_indices[chunk_slice] = trans_chunk['upper_id'] - 1
+			# inplace operations are faster, but not by much
+			trans_chunk['lower_id'] -= 1
+			trans_chunk['upper_id'] -= 1
 			
-			trans_states_chunk[self.lower_state_names][chunk_slice] = states[lower_state_indices[chunk_slice]]
-			trans_states_chunk[self.upper_state_names][chunk_slice] = states[upper_state_indices[chunk_slice]]
+			#trans_states_chunk[self.lower_state_names][chunk_slice] = states[trans_chunk['lower_id']]
+			#trans_states_chunk[self.upper_state_names][chunk_slice] = states[trans_chunk['upper_id']]
+			#trans_states_chunk['einstein_A'][chunk_slice] = trans_chunk['einstein_A'][chunk_slice]
 			
-			trans_states_chunk['einstein_A'][chunk_slice] = trans_chunk['einstein_A'][chunk_slice]
-			
+			# Not sure if these copies do anything
+			np.copyto(trans_states_chunk[self.lower_state_names][chunk_slice], states[trans_chunk['lower_id']])
+			np.copyto(trans_states_chunk[self.upper_state_names][chunk_slice], states[trans_chunk['upper_id']])
+			np.copyto(trans_states_chunk['einstein_A'][chunk_slice], trans_chunk['einstein_A'][chunk_slice])
 			
 			if calc_wavenumber_flag:
-				trans_states_chunk['wavenumber'] = (trans_states_chunk['E\''] - trans_states_chunk['E"']) # Energy is in cm^{-1} so can just subtract
+				#trans_states_chunk['wavenumber'] = (trans_states_chunk['E\''] - trans_states_chunk['E"']) # Energy is in cm^{-1} so can just subtract
+				# Swapping to `np.subtract` seems to make a big difference
+				np.subtract(trans_states_chunk['E\''], trans_states_chunk['E"'], out=trans_states_chunk['wavenumber'])
 			else:
-				trans_states_chunk['wavenumber'][chunk_slice] = trans_chunk['wavenumber']
+				#trans_states_chunk['wavenumber'][chunk_slice] = trans_chunk['wavenumber']
+				np.copyto(trans_states_chunk['wavenumber'][chunk_slice], trans_chunk['wavenumber'])
 			
-			n_transitions_processed += trans_chunk.size
-			dt_split_2 = dt.datetime.now()
-			
-			if progress_lgr.is_ready():
-				dt_split = dt.datetime.now()
-				dt_split_delta = (dt_split - dt_start).total_seconds()
-				trans_per_sec = n_transitions_processed / dt_split_delta
-				trans_remaining = (self.n_transitions - n_transitions_processed)
-				frac_complete = n_transitions_processed / self.n_transitions
-				est_time_remaining = dt.timedelta(seconds=trans_remaining / trans_per_sec)
-				est_time_remaining_str = time.delta_str(est_time_remaining)
-				est_completion_dt = dt_start + est_time_remaining
-				
-				dt_last_iter_delta = (dt_split_2 - dt_split_1)
-				dt_last_iter_delta_str = time.delta_str(dt_last_iter_delta)
-				
-				progress_lgr.info(f'{i=} Processed {n_transitions_processed}/{self.n_transitions} transitions [{100*frac_complete: 8.4f} %] in {dt_split_delta} s [{trans_per_sec: 8.2E} trans/s]  Est. time remaining {est_time_remaining_str}. Est. completion at {est_completion_dt}. Last iteration took {dt_last_iter_delta_str}')
-		
 			yield trans_states_chunk[chunk_slice]
 		
 		dt_end = dt.datetime.now()
@@ -653,9 +672,7 @@ class ExomolDatasetHolder:
 			self,
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
-	):
-		_lgr.info(f'{chunk_size=}')
-		
+	):		
 		line_data_chunk = np.empty((chunk_size,), dtype=self.line_data_dtype)
 		qn_acc_code_mask = np.zeros((chunk_size,), dtype=bool)
 		qn_code_mask = np.zeros((chunk_size,), dtype=bool)
@@ -668,6 +685,8 @@ class ExomolDatasetHolder:
 		cols_from_trans_states = [x for x in non_broad_names if x in trans_states_col_names]
 		
 		broad_var_names_list = [[f'gamma_{bg_name}', f'n_{bg_name}'] for bg_name in self.broad_gas_names] # broadening coefficent names in order of broadeing gas names
+		broad_source_var_names = self.broad_source_var_names
+		
 		
 		for trans_states_chunk in self.iter_transition_states(chunk_size=chunk_size, trans_files_slice=trans_files_slice):
 			chunk_slice = slice(None,len(trans_states_chunk))
@@ -676,31 +695,50 @@ class ExomolDatasetHolder:
 			line_data_chunk[cols_from_trans_states][chunk_slice] = trans_states_chunk[cols_from_trans_states][chunk_slice]
 			
 			# Some line data is calculated
-			spec_line_intensity_lte(
+			line_data_chunk['spec_line_intensity'][chunk_slice] = spec_line_intensity_lte(
 				T_ref,
 				Q_ref,
 				line_data_chunk['E"'][chunk_slice],
 				line_data_chunk['g_tot\''][chunk_slice],
 				line_data_chunk['einstein_A'][chunk_slice],
 				line_data_chunk['wavenumber'][chunk_slice],
-				out = line_data_chunk['spec_line_intensity'][chunk_slice],
 			)
+			#spec_line_intensity_lte(
+			#	T_ref,
+			#	Q_ref,
+			#	line_data_chunk['E"'][chunk_slice],
+			#	line_data_chunk['g_tot\''][chunk_slice],
+			#	line_data_chunk['einstein_A'][chunk_slice],
+			#	line_data_chunk['wavenumber'][chunk_slice],
+			#	out = line_data_chunk['spec_line_intensity'][chunk_slice],
+			#)
 			
 			line_data_chunk["spec_line_factor_exp_E"][chunk_slice] = exp_c2_Epp(
 				T_ref,
 				line_data_chunk['E"'][chunk_slice]
 			)
+			#exp_c2_Epp(
+			#	T_ref,
+			#	line_data_chunk['E"'][chunk_slice],
+			#	out=line_data_chunk["spec_line_factor_exp_E"][chunk_slice]
+			#)
 			
 			line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][chunk_slice] = one_minus_exp_c2_nu(
 				T_ref,
 				line_data_chunk['wavenumber'][chunk_slice]
 			)
+			#one_minus_exp_c2_nu(
+			#	T_ref,
+			#	line_data_chunk['wavenumber'][chunk_slice],
+			#	out = line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][chunk_slice]
+			#)
 			
 			# Broadening coefficients must be matched to valid combinations of quantum numbers
-			for bg_name, broad_var_names in zip(self.broad_gas_names, broad_var_names_list):
-				qn_acc_code_mask[...] = False # reset accumulator for each broadening gas
+			
+			for bg_name, broad_var_names, broad_source_name in zip(self.broad_gas_names, broad_var_names_list, broad_source_var_names):
+				qn_acc_code_mask.fill(False) # reset accumulator for each broadening gas
 				
-				for qn_code, qn_value_to_broad_map in self.broad_map[bg_name].items():
+				for qn_code, qn_value_to_broad_map in self.broad_map.get(bg_name,dict()).items():
 					qn_code_var_names = self.possible_qn_sets[qn_code]
 					
 					for qn_vals, (qn_comparator, broad_var_vals) in qn_value_to_broad_map.items():
@@ -724,6 +762,7 @@ class ExomolDatasetHolder:
 						#_lgr.debug(f'{np.count_nonzero(qn_acc_code_mask[chunk_slice])=}')
 						
 						line_data_chunk[broad_var_names][chunk_slice][qn_code_mask[chunk_slice]] = broad_var_vals
+						line_data_chunk[broad_source_name][chunk_slice][qn_code_mask[chunk_slice]] = BroadeningSourceCode.BROAD_FILE
 				
 				# lines that were not selected by `qn_code` and `qn_vals` in `broad_map` should use default values
 				# for their broadening coefficients. 
@@ -734,13 +773,16 @@ class ExomolDatasetHolder:
 				default_broad_vals = self.default_broad_vals.get(bg_name, None)
 				if default_broad_vals is not None:
 					line_data_chunk[broad_var_names][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = default_broad_vals
+					line_data_chunk[broad_source_name][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = BroadeningSourceCode.GAS_DEFAULT
 				elif len(self.fallback_broad_vals) == 2:
 					line_data_chunk[broad_var_names][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = self.fallback_broad_vals
+					line_data_chunk[broad_source_name][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = BroadeningSourceCode.ISO_DEFAULT
 				else:
 					line_data_chunk[broad_var_names][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = self.emergency_broad_vals
+					line_data_chunk[broad_source_name][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = BroadeningSourceCode.EMERGENCY_FALLBACK
+		
 			
-			
-			yield line_data_chunk[chunk_slice]
+			yield line_data_chunk[chunk_slice][~np.isnan(line_data_chunk['spec_line_intensity'][chunk_slice])]
 
 	
 	def partition_function_at(
@@ -761,6 +803,36 @@ class ExomolDatasetHolder:
 		
 		return (contbins_fnames, continuum_fnames, stronglines_fnames)
 	
+	@property
+	def pseudo_continuum_contribution_dtype_list(self) -> list[tuple[str,Any],...]:
+		if self._pseudo_continuum_contribution_dtype_list is None:
+			self._pseudo_continuum_contribution_dtype_list =  (
+				[
+					('line_strength_sum', float),
+					('strength_weighted_sum_E"', float),
+				] 
+				+ [(f'strength_weighted_{broad_param_name}', broad_param_dtype) for broad_param_name, broad_param_dtype in self.broad_dtype]
+			)
+		return self._pseudo_continuum_contribution_dtype_list
+	
+	@property
+	def pseudo_continuum_contribution_dtype(self) -> np.dtype:
+		if self._pseudo_continuum_contribution_dtype is None:
+			self._pseudo_continuum_contribution_dtype = np.dtype(self.pseudo_continuum_contribution_dtype_list)
+		return self._pseudo_continuum_contribution_dtype
+	
+	@property
+	def pseudo_continuum_broadener_var_name_pairs(self) -> tuple[tuple[str,str],...]:
+		return tuple((f'strength_weighted_{broad_param_name}', broad_param_name) for broad_param_name, broad_param_dtype in self.broad_dtype)
+	
+	@property
+	def pseudo_continuum_var_name_pairs(self) -> tuple[tuple[str,str],...]:
+		return (
+			('strength_weighted_sum_E"', 'E"'),
+			*self.pseudo_continuum_broadener_var_name_pairs
+		)
+	
+	
 	def iter_lines_and_continuum_at_temp(
 			self,
 			T : np.ndarray,
@@ -780,17 +852,19 @@ class ExomolDatasetHolder:
 		cont_n_bin_edges = continuum_bin_edges.size
 		cont_n_bins = cont_n_bin_edges-1
 		
-		continuum_contribution = np.zeros((T.size, cont_n_bins), dtype=float)
+		pseudo_continuum_contribution = np.zeros((T.size, cont_n_bins), dtype=self.pseudo_continuum_contribution_dtype)
+		pseudo_continuum_var_name_pair_tuple = self.pseudo_continuum_var_name_pairs
 		
 		bin_indices = np.empty((T.size, chunk_size,), dtype=int)
-		bin_indices_valid = np.empty((T.size, chunk_size,), dtype=bool)
+		bin_indices_valid_mask = np.empty((T.size, chunk_size,), dtype=bool)
 		
 		wavenumber_gt_zero_mask = np.zeros((chunk_size,), dtype=bool)
 		
 		one_minus_exp_c2_nu_ratio = np.empty((T.size, chunk_size,), dtype=float)
 		
 		
-		line_strength_mask = np.empty((T.size, chunk_size,), dtype=bool)
+		strong_line_mask = np.empty((T.size, chunk_size,), dtype=bool)
+		weak_line_mask = np.empty((T.size, chunk_size,), dtype=bool)
 		line_strengths_at_temp = np.empty((T.size, chunk_size,), dtype=float)
 		
 		n_strong_lines = np.zeros((T.size,), dtype=int)
@@ -801,14 +875,25 @@ class ExomolDatasetHolder:
 		
 		for line_data_chunk in self.iter_line_data(chunk_size=chunk_size, trans_files_slice=trans_files_slice):
 			chunk_slice = slice(None, line_data_chunk.size)
+			_lgr.info(f'{line_data_chunk.size=}')
+			
+			# set continuum contribution for this chunk to zero
+			pseudo_continuum_contribution.fill(0.0)
+			strong_line_mask.fill(False)
 			
 			wavenumber_gt_zero_mask[chunk_slice] = line_data_chunk['wavenumber'] > 0
 			one_minus_exp_c2_nu_ratio.fill(1.0)
 			
-			one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]] = (
-				one_minus_exp_c2_nu(T_ref,line_data_chunk['wavenumber'][wavenumber_gt_zero_mask[chunk_slice]]) 
-				/ one_minus_exp_c2_nu(T, line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][wavenumber_gt_zero_mask[chunk_slice]])
-			)
+			#one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]] = (
+			#	one_minus_exp_c2_nu(T_ref,line_data_chunk['wavenumber'][wavenumber_gt_zero_mask[chunk_slice]]) 
+			#	/ one_minus_exp_c2_nu(T, line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][wavenumber_gt_zero_mask[chunk_slice]])
+			#)
+			one_minus_exp_c2_nu(T, line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][wavenumber_gt_zero_mask[chunk_slice]], out=one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]])
+			np.divide(one_minus_exp_c2_nu(T_ref,line_data_chunk['wavenumber'][wavenumber_gt_zero_mask[chunk_slice]]), one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]], out=one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]])
+			
+			_lgr.info(f'{one_minus_exp_c2_nu_ratio[:,chunk_slice].shape=}')
+			_lgr.info(f'{Q_ratio=}')
+			_lgr.info(f'{(exp_c2_Epp(T,line_data_chunk['E"'])/line_data_chunk["spec_line_factor_exp_E"]).shape=}')
 			
 			line_strengths_at_temp[:, chunk_slice] = (
 				line_data_chunk['spec_line_intensity'] 
@@ -817,37 +902,55 @@ class ExomolDatasetHolder:
 					* one_minus_exp_c2_nu_ratio[:,chunk_slice]
 			)
 			
-			line_strength_mask[:,chunk_slice] = line_strengths_at_temp[chunk_slice] > continuum_line_intensity_cutoff
+			strong_line_mask[:,chunk_slice] = line_strengths_at_temp[:,chunk_slice] > continuum_line_intensity_cutoff
+			weak_line_mask = ~strong_line_mask
 			
-			n_strong_lines[...] = np.count_nonzero(line_strength_mask[chunk_slice], axis=1)
+			n_strong_lines[...] = np.count_nonzero(strong_line_mask[:,chunk_slice], axis=1)
 			n_weak_lines[...] = line_data_chunk.size - n_strong_lines
 			
-			progress_lgr.info(f'{np.min(line_data_chunk['wavenumber'])=} {np.max(line_data_chunk['wavenumber'])=}')
-			progress_lgr.info(f'{np.min(line_strengths_at_temp[chunk_slice])=} {np.max(line_strengths_at_temp[chunk_slice])=}')
-			progress_lgr.info(f'{n_strong_lines=} {n_weak_lines=}')
+			_lgr.info(f'{np.min(line_data_chunk['wavenumber'])=} {np.max(line_data_chunk['wavenumber'])=}')
+			_lgr.info(f'{np.min(line_strengths_at_temp[chunk_slice])=} {np.max(line_strengths_at_temp[chunk_slice])=}')
+			_lgr.info(f'{n_strong_lines=} {n_weak_lines=}')
 			
 			# Place continuum lines into continuum
 			# PLACEHOLDER IMPLEMENTATION FOR NOW
+			
+			
 			for j in range(n_temps):
-				bin_indices[j,:n_weak_lines[j]] = np.searchsorted(continuum_bin_edges, line_data_chunk['wavenumber'][chunk_slice][~line_strength_mask[j,chunk_slice]])
+				bin_indices[j,:n_weak_lines[j]] = np.searchsorted(continuum_bin_edges, line_data_chunk['wavenumber'][chunk_slice][weak_line_mask[j,chunk_slice]])
 				bin_indices[j] -= 1 # the result of the above will be between [0,continuum_bin_edges.size], therefore subtracting one will give correct bins indices.
 				
-				bin_indices_valid[j,:n_weak_lines[j]] = (bin_indices[j,:n_weak_lines[j]] >= 0) & (bin_indices[j,:n_weak_lines[j]] < continuum_contribution.shape[1])
-				bin_indices_valid[j,n_weak_lines[j]:] = False
+				bin_indices_valid_mask[j,:n_weak_lines[j]] = (bin_indices[j,:n_weak_lines[j]] >= 0) & (bin_indices[j,:n_weak_lines[j]] < cont_n_bins)
+				bin_indices_valid_mask[j,n_weak_lines[j]:] = False
 			
-			n_weak_lines_in_continuum[...] = np.sum(bin_indices_valid, axis=1)
+			selected_bin_indices = tuple(bin_indices_part[bin_indices_valid_mask_part] for bin_indices_part, bin_indices_valid_mask_part in zip(bin_indices, bin_indices_valid_mask))
+			
+			
+			n_weak_lines_in_continuum[...] = np.sum(bin_indices_valid_mask, axis=1)
 			n_weak_lines_outside_continuum[...] = n_weak_lines - n_weak_lines_in_continuum
-			progress_lgr.info(f'{n_weak_lines_in_continuum=} {n_weak_lines_outside_continuum=}')
+			_lgr.info(f'{n_weak_lines_in_continuum=} {n_weak_lines_outside_continuum=}')
 			
 			# This sets the continuum contribution from the weak lines that are inside the continuum wavelength range
 			for j in range(n_temps):
-				continuum_contribution[j,bin_indices[j,bin_indices_valid[j]]] += line_strengths_at_temp[j,chunk_slice][~line_strength_mask[j,chunk_slice]][bin_indices_valid[j,:n_weak_lines[j]]]
+				weak_line_mask_part = weak_line_mask[j,chunk_slice]
+				pc_line_strengths = line_strengths_at_temp[j,chunk_slice][weak_line_mask_part]
 			
-			progress_lgr.info('Continuum contribution calculated')
+				pseudo_continuum_contribution['line_strength_sum'][j,selected_bin_indices[j]] += pc_line_strengths
+				
+			
+				for str_weighted_var_name, var_name in pseudo_continuum_var_name_pair_tuple:
+					pseudo_continuum_contribution[str_weighted_var_name][j,selected_bin_indices[j]] += pc_line_strengths * line_data_chunk[var_name][weak_line_mask_part]
+			
+			_lgr.info('Continuum contribution calculated')
 			
 			
-			yield n_strong_lines, n_weak_lines_in_continuum, (line_data_chunk[line_strength_mask[j,chunk_slice]] for j in range(n_temps)), continuum_contribution
-			progress_lgr.info('strong lines and continuum data outputted')
+			yield (
+				n_strong_lines, 
+				n_weak_lines_in_continuum, 
+				(line_data_chunk[strong_line_mask[j,chunk_slice]] for j in range(n_temps)), 
+				pseudo_continuum_contribution
+			)
+			_lgr.info('strong lines and continuum data outputted')
 			
 				
 			

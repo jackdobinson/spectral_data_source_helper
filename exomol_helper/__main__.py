@@ -10,6 +10,7 @@ import numpy as np
 from exomol_helper.cfg.const import (
 	REPO_LOCAL,
 	T_ref,
+	P_ref,
 )
 
 from exomol_helper.datatypes import (
@@ -26,9 +27,10 @@ import exomol_helper.utils
 import exomol_helper.utils.dtype
 import exomol_helper.utils.structured_array
 
+import exomol_helper.calc.pseudo_continuum
 
 import logging
-from exomol_helper.cfg.log import pkg_logger
+from exomol_helper.cfg.log import pkg_logger, progress_lgr
 
 
 mol_iso_dataset_dict = exomol_all_dataset_name_dict()
@@ -336,7 +338,8 @@ def exomol_calc_continuum(
 		continuum_bin_spacing : Literal['lin', 'log'] = 'lin',
 		chunk_size : int = 1_000_000,
 ):
-	pkg_logger.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	progress_lgr.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
 	temperature_arr = np.array(temperature, dtype=float)
 	
@@ -347,27 +350,32 @@ def exomol_calc_continuum(
 	else:
 		raise RuntimeError(f'Unknown value for {continuum_bin_spacing=}')
 	
-	# Create a continuum for each temperature
-	continuums = np.zeros((*temperature_arr.shape, continuum_n_bins,), dtype=float)
-	total_strong_lines = np.zeros(temperature_arr.shape, dtype=int)
-	total_weak_lines_in_continuum = np.zeros(temperature_arr.shape, dtype=int)
+	
 	
 	for ds_holder in dataset_holders:
+	
+		# Create a continuum for each temperature
+		pseudo_continuums = np.zeros((*temperature_arr.shape, continuum_n_bins,), dtype=ds_holder.pseudo_continuum_contribution_dtype)
+		total_strong_lines = np.zeros(temperature_arr.shape, dtype=int)
+		total_weak_lines_in_continuum = np.zeros(temperature_arr.shape, dtype=int)
+	
 	
 		contbins_fpaths, continuum_fpaths, stronglines_fpaths = (tuple(REPO_LOCAL / fname for fname in fnames) for fnames in ds_holder.get_line_and_continuum_fnames_at_temp(temperature_arr))
 	
 		dt_start = dt.datetime.now()
+		dt_split_2 = dt_start
 	
 		# Write the continuum bins to their files
 		for contbins_fpath in contbins_fpaths:
 			with open(contbins_fpath, 'wb') as f:
 				continuum_bin_edges.tofile(f)
+			print(f'Written continum bin edge data to "{str(contbins_fpath)}"')
 		
 		try:
-			continuum_fhdls = tuple(open(fpath, 'wb') for fpath in continuum_fpaths)
+			continuum_fhdls = tuple(exomol_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in continuum_fpaths)
 			stronglines_fhdls = tuple(exomol_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in stronglines_fpaths)
 		
-			for n_strong_lines, n_weak_lines_in_continuum, strong_lines_chunks, continuum_contributions in ds_holder.iter_lines_and_continuum_at_temp(
+			for n_strong_lines, n_weak_lines_in_continuum, strong_lines_chunks, pseudo_continuum_contributions in ds_holder.iter_lines_and_continuum_at_temp(
 				T = temperature_arr, 
 				continuum_bin_edges = continuum_bin_edges,
 				continuum_line_intensity_cutoff=continuum_line_intensity_cutoff,
@@ -384,22 +392,28 @@ def exomol_calc_continuum(
 				for slc, fhdl in zip(strong_lines_chunks, stronglines_fhdls):
 					fhdl.write(slc)
 				
-				for i, (cc, fhdl) in enumerate(zip(continuum_contributions, continuum_fhdls)):
-					continuums[i] += cc
-					continuums[i].tofile(fhdl)
+				# Have to do summation field-by-field as numpy does not know how to do it for structured arrays
+				for field_name in pseudo_continuums.dtype.fields:
+					pseudo_continuums[field_name] += pseudo_continuum_contributions[field_name]
+				
+				# Write out continuum data-so-far to file
+				for i, (pc_part, fhdl) in enumerate(zip(pseudo_continuums, continuum_fhdls)):
+					fhdl.write(pseudo_continuums[i])
 					fhdl.seek(0,0)
 				
 				dt_split = dt.datetime.now()
 				dt_elapsed_delta = dt_split - dt_start
 				dt_elapsed_str = f'{dt_elapsed_delta.days}D {dt_elapsed_delta.seconds//3600}H {(dt_elapsed_delta.seconds %3600)//60}M {dt_elapsed_delta.seconds%60}s'
 				
-				print(f'Writing data to files took {1000*(dt_split - dt_start_write).total_seconds()} ms.')
-				
-				print('     Temperature | num. strong lines | num. weak lines | total strong lines | total weak lines')
-				for temp, n_sl, n_wl, t_sl, t_wl in zip(temperature_arr, n_strong_lines, n_weak_lines_in_continuum, total_strong_lines, total_weak_lines_in_continuum):
-					print(f'     {temp:11.2f} | {n_sl:17d} | {n_wl:16d} | {t_sl:18d} | {t_wl:16d}')
-				
-				print(f'Elapsed time: {dt_elapsed_str}')
+				if (dt_split - dt_split_2).total_seconds() > 1:
+					dt_split_2 = dt.datetime.now()
+					print(f'Writing data to files took {1000*(dt_split - dt_start_write).total_seconds()} ms.')
+					
+					print('     Temperature | num. strong lines | num. weak lines | total strong lines | total weak lines')
+					for temp, n_sl, n_wl, t_sl, t_wl in zip(temperature_arr, n_strong_lines, n_weak_lines_in_continuum, total_strong_lines, total_weak_lines_in_continuum):
+						print(f'     {temp:11.2f} | {n_sl:17d} | {n_wl:16d} | {t_sl:18d} | {t_wl:16d}')
+					
+					print(f'Elapsed time: {dt_elapsed_str}')
 				
 				
 		
@@ -417,9 +431,12 @@ def exomol_read_continuum_data(
 		start : int = 0,
 		stop : int = 10,
 		step : int = 1,
+		temp : None | float = None,
 ):
 	assert fname is not None, "Must have name of files to work with"
 		
+	pkg_logger.setLevel(logging.INFO)
+	progress_lgr.setLevel(logging.INFO)
 
 	line_data_slice = slice(start, None if stop==0 else stop+1, step)
 	
@@ -463,6 +480,17 @@ def exomol_read_continuum_data(
 			pkg_logger.error('Could not find continuum bin file, exiting...')
 			return
 		
+		# Get temperature from file name
+		print('    Getting creation temperature from file name...')
+		temp_cont = float(line_data_fpath.name.rsplit('T',1)[1].rsplit('.',1)[0])
+		print(f'    Found creation temperature {temp_cont}')
+		
+		if temp is None:
+			print('    No calculation temperature set, using creation temperature')
+			temp = temp_cont
+		else:
+			print(f'    Calculation temperature is {temp}')
+		
 		with exomol_helper.utils.structured_array.StructuredArrayFile(line_data_fpath,'rb') as f:
 			line_data = f.read()
 		
@@ -479,17 +507,31 @@ def exomol_read_continuum_data(
 		with open(continuum_bin_fpath, 'rb') as f:
 			print('    Reading continuum bins.')
 			continuum_bin_edges = np.fromfile(f, dtype=float)
+		print(f'{continuum_bin_edges.shape=}')
 		
 		continuum_data = None
-		with open(continuum_data_fpath, 'rb') as f:
+		with exomol_helper.utils.structured_array.StructuredArrayFile(continuum_data_fpath, 'rb') as f:
 			print('    Reading continuum data.')
-			continuum_data = np.fromfile(f, dtype=float)
+			continuum_data = f.read()
+		print(f'{continuum_data.shape=}')
+		print('    Continuum data columns:')
+		print(f'        {" | ".join(continuum_data.dtype.names)}')
 			
 		print('    Continuum data:')
+		cont_bin_print_dots_flag = True
 		for i in range(continuum_data.size):
 			
-			print(f'        bin edge    {continuum_bin_edges[i]}')
-			print(f'        value           {continuum_data[i]}')
+			if (2 <= i) and (i < (continuum_data.size-2)):
+				if cont_bin_print_dots_flag:
+					print(f'        bin edge    {continuum_bin_edges[i]}')
+					print('        ...')
+					cont_bin_print_dots_flag = False
+			else:
+				print(f'        bin edge    {continuum_bin_edges[i]}')
+				print(f'        value           {continuum_data[i]}')
+				cont_bin_print_dots_flag = True
+			
+			
 		print(f'        bin edge    {continuum_bin_edges[-1]}')
 		
 		
@@ -502,7 +544,41 @@ def exomol_read_continuum_data(
 			from .plotters.continuum_plotter import ContinuumPlotter
 			from .plotters.linedata_plotter import LinedataPlotter
 			
-			pltr = ContinuumPlotter().plot(continuum_data, continuum_bin_edges)
+			print('    Plotting data...', flush=True)
+			
+			broad_foreign_gasses = tuple(
+				gas_name for gas_name in ds_holder.broad_gas_names if gas_name != 'self'
+			)
+			print(f'    {broad_foreign_gasses=}', flush=True)
+			broad_gas_amb_fracs = tuple(0.5 for _ in broad_foreign_gasses)
+			print(f'    {broad_gas_amb_fracs=}', flush=True)
+			
+			chosen_gas_idx = 0
+			chosen_gas = broad_foreign_gasses[chosen_gas_idx]
+			chosen_gas_amb_frac = broad_gas_amb_fracs[chosen_gas_idx]
+			print(f'    {chosen_gas_idx=} {chosen_gas=} {chosen_gas_amb_frac=}', flush=True)
+			
+			pseudo_continuum_data = exomol_helper.calc.pseudo_continuum.pseudo_continuum(
+				1,
+				temp,
+				ds_holder.partition_function_at(temp),
+				0.5*(continuum_bin_edges[:-1] + continuum_bin_edges[1:]),
+				np.diff(continuum_bin_edges),
+				continuum_data['line_strength_sum'],
+				continuum_data['strength_weighted_sum_E"'],
+				continuum_data['strength_weighted_gamma_self'],
+				continuum_data['strength_weighted_n_self'],
+				continuum_data[f'strength_weighted_gamma_{chosen_gas}'],
+				continuum_data[f'strength_weighted_n_{chosen_gas}'],
+				ds_holder.iso_mass_cgs,
+				chosen_gas_amb_frac,
+				ds_holder.partition_function_at(temp_cont),
+				T_cont = temp_cont,
+				P_cont = P_ref,
+				n_neighbour_bins = 3,
+			)
+			
+			pltr = ContinuumPlotter().plot(pseudo_continuum_data, continuum_bin_edges)
 			pltr.ylog()
 			
 			
@@ -513,6 +589,7 @@ def exomol_read_continuum_data(
 			LinedataPlotter(ax=pltr.ax).plot(line_data)
 			
 			plt.show()
+			print('    Data plotted', flush=True)
 		
 
 def exomol_convert_trans(
@@ -521,6 +598,7 @@ def exomol_convert_trans(
 		chunk_size : int = 1_000_000,
 		n_files : None | int = None,
 ):
+
 	for ds_holder in dataset_holders:
 		ds_holder.convert_transition_files_to_fmt(
 			fmt=fmt,
@@ -631,6 +709,7 @@ if __name__=='__main__':
 	read_continuum_data_parser.add_argument('-n', '--start', type=int, help='start of slice to print', default=0)
 	read_continuum_data_parser.add_argument('-m', '--stop', type=int, help='stop of slice to print (0 is "past the end", so selects all until end) endpoint is inclusive', default=10)
 	read_continuum_data_parser.add_argument('-l', '--step', type=int, help='step of slice to print', default=1)
+	read_continuum_data_parser.add_argument('-t', '--temp', type=float, help='Temperature to calculate pseudo-continuum at', default=None)
 	
 	convert_trans_parser = subparsers.add_parser('convert_trans', help='Convert transition data to new format')
 	convert_trans_parser.set_defaults(func = exomol_convert_trans)

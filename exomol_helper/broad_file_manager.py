@@ -49,16 +49,18 @@ def search_broad_files_for(mol_formula : str, iso_slug : str):
 			broadener_url_candidates = tuple(EXOMOL_URL_PREFIX + f'/{mol_formula}/{main_iso_slug}/{main_iso_slug}__{x}.broad' for x in v)
 			broadener_url = None
 			for url_candidate in broadener_url_candidates:
-				try:
-					fetch.file_from_cache(f'https://www.{url_candidate}',cache=EXOMOL_CACHE,return_fpath=True)
-				except:
-					broadener_url= None
-				else:
+				broadener_fpath = fetch.file_from_cache(
+					f'https://www.{url_candidate}',
+					cache=EXOMOL_CACHE,
+					return_fpath=True,
+					not_found_in_cache_action='return_none',
+					error_code_action = {404 : 'ignore', 'timeout' : 'warning'},
+				)
+				
+				if broadener_fpath is not None:
 					broadener_url = url_candidate
-					
-				if broadener_url is not None:
 					break
-			
+				
 			if broadener_url is not None:
 				broad_files.setdefault(mol_formula,dict()).setdefault(main_iso_slug, dict())[k] = broadener_url
 	
