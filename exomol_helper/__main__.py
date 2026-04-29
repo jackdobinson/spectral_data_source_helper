@@ -189,6 +189,8 @@ def exomol_trans(
 		n_to_print : int = 10,
 		chunk_size : int = 1_000_000,
 ):
+	import exomol_helper.cfg.log # for later
+	
 	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
 	for ds_holder in dataset_holders:
@@ -209,12 +211,16 @@ def exomol_trans(
 			print(f'        {afile}')
 		
 		print('    Transition reading speed check:')
+		exomol_helper.cfg.log.progress_stream_hdlr.terminator='\n'
+		
 		n_seconds = 30
 		dt_start = dt.datetime.now()
 		for j, transition_chunk in enumerate(ds_holder.iter_transitions(chunk_size=chunk_size)):
 			dt_split = dt.datetime.now()
 			if (dt_split - dt_start).total_seconds() >= n_seconds:
 				break
+		
+		exomol_helper.cfg.log.progress_stream_hdlr.terminator='\r'
 		
 		print(f'    First {n_to_print} transitions ({ds_holder.n_transitions} in total):')
 		do_stop = False
@@ -339,7 +345,7 @@ def exomol_calc_continuum(
 		chunk_size : int = 1_000_000,
 ):
 	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
-	progress_lgr.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	progress_lgr.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
 	temperature_arr = np.array(temperature, dtype=float)
 	

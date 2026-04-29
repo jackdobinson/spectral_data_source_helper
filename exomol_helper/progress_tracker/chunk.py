@@ -11,30 +11,49 @@ class ChunkProgressTracker(BaseProgressTracker):
 			self, 
 			data_handler : Callable[[Any],Any] = None,
 			rate_limit_timeout : float = 0,
-			chunk_element_name : str = 'Line'
+			chunk_element_name : str = 'Line',
 		):
 		super().__init__(data_handler, rate_limit_timeout)
-		self.prev_total_bytes = 0
 		self.chunk_element_name = chunk_element_name
+		self.source_name = ''
+		
+		self.total_bytes = 0
+		self.prev_total_bytes = 0
+		self.total_elements = 0
+		self.prev_total_elements = 0
 		
 
-	def set(self, chunk_element_num : int, total_bytes : int):
+	def reset(self):
+		self.reset_rate()
+		self.total_elements = 0
+		self.total_bytes = 0
+		self.prev_total_bytes = 0
+		self.prev_total_elements = 0
+
+	def set(self, delta_chunk_elements : int, delta_bytes : int):
+		self.total_bytes += delta_bytes
+		self.total_elements += delta_chunk_elements
+	
 		if not self.rate_limit_expired():
 			return
 		
 		self.data = ChunkRateInfo(
-			total_elements = chunk_element_num,
+			self.source_name,
 			element_name = self.chunk_element_name,
+			total_elements = self.total_elements,
+			rolling_elements = self.total_elements - self.prev_total_elements,
 			total_memory_rate = MemoryRateInfo(
-				total_bytes,
-				self.total_elapsed_sec + 1E-30,
+				self.total_bytes,
+				self.total_elapsed_sec,
 			),
 			rolling_memory_rate = MemoryRateInfo(
-				total_bytes - self.prev_total_bytes,
-				self.split_elapsed_sec + 1E-30,
+				self.total_bytes - self.prev_total_bytes,
+				self.split_elapsed_sec,
 			),
 		)
 		
-		self.prev_total_bytes = total_bytes
+		self.prev_total_bytes = self.total_bytes
+		self.prev_total_elements = self.total_elements
+		
 		
 		self.emit()

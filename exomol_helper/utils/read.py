@@ -20,8 +20,8 @@ PROGRESS_INTERVAL = 100_000
 
 
 module_progress_sink : ModuleVar = ModuleVar(
-	lambda x: print(str(x), end='\r', flush=True)
-	#lambda x: progress_lgr.info(str(x))
+	#lambda x: print(str(x), end='\r', flush=True)
+	lambda x: progress_lgr.info(str(x), stacklevel=4)
 )
 
 
@@ -118,6 +118,7 @@ def iter_line_records(
 		
 		with open(fpath, 'rb') as f:
 			for n_bytes, line in line_iterator(f):
+				#print(f'{n_bytes=}')
 				yield n_bytes, decoder(line)
 		
 		_lgr.info(f'Finished reading {fpath=}')
@@ -154,10 +155,11 @@ def iter_line_records_via_structured_array_chunk(
 	i=0
 	nn = 0
 	mm = chunk_size
-	total_bytes = 0
+	
+	bytes_in_chunk = 0
 
 	for n_bytes, x in iter_line_records(fpaths):
-		total_bytes += n_bytes
+		bytes_in_chunk += n_bytes
 		
 		if len(x)==0:
 			continue
@@ -173,10 +175,11 @@ def iter_line_records_via_structured_array_chunk(
 		
 		if i >= mm:
 			if progress_tracker is not None:
-				progress_tracker.set(i, total_bytes)
+				progress_tracker.set(chunk_size, bytes_in_chunk)
 			yield chunk
 			nn+=chunk_size
 			mm+=chunk_size
+			bytes_in_chunk = 0
 			
 		
 		if mutator is not None:
@@ -190,7 +193,7 @@ def iter_line_records_via_structured_array_chunk(
 		i+=1
 	
 	if progress_tracker is not None:
-		progress_tracker.set(i, total_bytes)
+		progress_tracker.set(i-nn, bytes_in_chunk)
 	yield chunk[:i-nn]
 
 
@@ -244,20 +247,23 @@ def files_via_structured_array_chunk(
 		chunk_size : int = 1_000_000,
 		shape_tail : tuple[int,...] = tuple(),
 		mutator : None | Callable[[Iterable],Iterable] = None,
-		line_mutator : None | Callable[[str], None|str] = None
+		line_mutator : None | Callable[[str], None|str] = None,
+		progress_tracker : None | BaseProgressTracker = None,
 ):
 	_lgr.info('files_via_structured_array_chunk(...)')
 	
-	read_progress_tracker = ChunkProgressTracker(
-		module_progress_sink.get(), 
-		rate_limit_timeout = 0.5, 
-		chunk_element_name='Record'
-	)
+	if progress_tracker is None:
+		progress_tracker = ChunkProgressTracker(
+			module_progress_sink.get(), 
+			rate_limit_timeout = 0.5, 
+			chunk_element_name='Record'
+		)
 
 	if isinstance(fpaths, (str, Path)):
 		fpaths = (fpaths,)
 	
 	for fpath in fpaths:
+		progress_tracker.source_name = fpath.name
 		_lgr.debug(f'{fpath=}')
 		
 		ftype = fpath.suffix
@@ -275,18 +281,21 @@ def files_via_structured_array_chunk(
 				shape_tail,
 				mutator,
 				line_mutator,
-				progress_tracker=read_progress_tracker,
+				progress_tracker=progress_tracker,
 			)
 		elif ftype in ('.bin',):
 			
 			chunk_number = 0
-			
+			n_bytes_read = 0
+			prev_n_bytes_read = 0
 			f = exomol_helper.utils.structured_array.StructuredArrayFile(fpath, 'rb')
 			result = f.read(count = chunk_size)
 			
 			while result.size > 0:
 				chunk_number += 1
-				read_progress_tracker.set(f.n_records_read, f.tell())
+				n_bytes_read = f.tell()
+				progress_tracker.set(result.size, n_bytes_read - prev_n_bytes_read)
+				prev_n_bytes_read = n_bytes_read
 				
 				yield result
 				result = f.read(count = chunk_size)
@@ -298,10 +307,8 @@ def files_via_structured_array_chunk(
 			
 			i = 0
 			n = chunk_size
-			n_records_read = 0
 			while n < array.size:
-				n_records_read =+ n
-				read_progress_tracker.set(n_records_read, array.nbytes)
+				progress_tracker.set(chunk_size, array.nbytes*(chunk_size/array.shape[0]))
 				yield array[i:n]
 				i += chunk_size
 				n += chunk_size
@@ -319,12 +326,13 @@ def files_via_structured_array_chunk(
 			b = np.array([a.nbytes for a in arrays], dtype=int)
 			
 			while np.any(n < s):
-				m += (n<s) * chunk_size
-				read_progress_tracker.set(m, b)
+				progress_tracker.set(n - m, b*((m-n)/s))
 				
 				yield tuple(a[_i : _n] if _n < _s else a[0:0] for a, _i, _n, _s in zip(arrays, i, n, s))
+				m[...] = n
 				i += chunk_size
 				n += chunk_size
+				
 			
 			
 			

@@ -15,7 +15,10 @@ class ValueProgressTracker(BaseProgressTracker):
 		super().__init__(data_handler, rate_limit_timeout)
 		self.prev_total_value = 0
 		self.unit = unit
-		
+	
+	def reset(self):
+		super().reset()
+		self.prev_total_value = 0
 
 	def set(self, total_value : float):
 		if not self.rate_limit_expired():
