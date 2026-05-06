@@ -12,8 +12,12 @@ from ..cfg.const import (
 	P_ref,
 	k_boltzmann_cgs,
 	N_avogadro,
-	c_light_cgs
+	c_light_cgs,
+	c2_cgs,
 )
+
+import exomol_helper.calc.numba.spec
+
 
 SQRT_2log2 = np.sqrt(2*np.log(2))
 
@@ -74,13 +78,13 @@ def stimulated_emission(
 		transition_energy : np.ndarray, # Energy difference between upper and lower states. Can be approximated by center of bin wavenumber (may need to convert units)
 		temp : float | np.ndarray,
 ):
-	return 1 - np.exp(-transition_energy/(k_boltzmann_cgs*temp))
+	return 1 - np.exp(-transition_energy*c2_cgs/temp)
 
 def boltzmann_population(
 		str_weighted_mean_lower_state_energy : np.ndarray,
 		temp : float | np.ndarray,
 ):
-	return np.exp(-str_weighted_mean_lower_state_energy/(k_boltzmann_cgs*temp))
+	return np.exp(-str_weighted_mean_lower_state_energy*c2_cgs/temp)
 
 
 def pseudo_continuum(
@@ -101,60 +105,44 @@ def pseudo_continuum(
 		lineshape_fn : Callable[[np.ndarray,float,float],np.ndarray] = voigt,
 		T_cont : float = T_ref, # Temperature the pseudo-continuum was calculate at
 		P_cont : float = P_ref, # Pressure the pseudo-continuum was calculated at
-		n_neighbour_bins : None | int = None, # number of bins around center to calculate line-spilling for
+		n_neighbour_bins : int = 3, # number of bins around center to calculate line-spilling for
 ):
-	#print('pseudo_continuum(...):', flush=True)
+	if not isinstance(temp, np.ndarray):
+		temp = np.array([temp], dtype=float)
+
+	if not isinstance(partition_fn_at_temp, np.ndarray):
+		partition_fn_at_temp = np.array([partition_fn_at_temp], dtype=float)
+
+	result = np.zeros((temp.size, continuum_bin_centers.size,), dtype=float)
+	store_x = np.empty((3, continuum_bin_centers.size,), dtype=float)
+	store_y = np.empty((2*n_neighbour_bins+1,), dtype=float)
 	
-	#print('    Q_ratio', flush=True)
-	Q_ratio = Q_cont / partition_fn_at_temp
-	
-	#print('    stimulated_emission_ratio', flush=True)
-	stimulated_emission_ratio = stimulated_emission(continuum_bin_centers,temp)/stimulated_emission(continuum_bin_centers, T_cont)
-	
-	#print('    boltz_pop_ratio', flush=True)
-	boltz_pop_ratio = boltzmann_population(str_weighted_mean_lower_state_energy/line_str_sum,temp) / boltzmann_population(str_weighted_mean_lower_state_energy/line_str_sum, T_cont)
-	
-	#print('    cumulative_strength', flush=True)
-	cumulative_strength = line_str_sum * Q_ratio * stimulated_emission_ratio * boltz_pop_ratio
-	
-	#print('    gamma_L', flush=True)
-	gamma_L = lorentz_width(
-		pressure / P_cont,
+	print(f'{partition_fn_at_temp=}')
+
+	exomol_helper.calc.numba.spec.pseudo_continuum(
+		pressure,
 		temp,
-		amb_frac,
-		str_weighted_mean_gamma_self/line_str_sum,
-		str_weighted_mean_n_self/line_str_sum,
-		str_weighted_mean_gamma_amb/line_str_sum,
-		str_weighted_mean_n_amb/line_str_sum,
-		T_cont
-	)
-	
-	#print('    alpha_D', flush=True)
-	alpha_D = doppler_width(
-		temp,
+		partition_fn_at_temp,
+		continuum_bin_centers,
+		continuum_bin_widths,
+		line_str_sum,
+		str_weighted_mean_lower_state_energy,
+		str_weighted_mean_gamma_self,
+		str_weighted_mean_n_self,
+		str_weighted_mean_gamma_amb,
+		str_weighted_mean_n_amb,
 		iso_mass_cgs,
-		continuum_bin_centers
+		amb_frac,
+		Q_cont,
+		
+		T_cont = T_cont,
+		P_cont = P_cont,
+		n_neighbour_bins = n_neighbour_bins,
+		lineshape_id = exomol_helper.calc.numba.spec.LINESHAPE_ID_VOIGT,
+		
+		out = result,
+		store_x = store_x,
+		store_y = store_y,
 	)
 	
-	#print('    neighbour_slice_iter', flush=True)
-	if n_neighbour_bins is None:
-		neighbour_slice_iter = (slice(None) for i in range(continuum_bin_centers.size))
-	else:
-		neighbour_slice_iter = (slice(i-n_neighbour_bins if (i-n_neighbour_bins) >= 0 else 0, i+n_neighbour_bins) for i in range(continuum_bin_centers.size))
-	
-	#print('    result', flush=True)
-	result = np.zeros((continuum_bin_centers.size,), dtype=float)
-	
-	#print('    loop', flush=True)
-	for i, neighbour_slice in enumerate(neighbour_slice_iter):
-		#print(f'{i=} ', end='', flush=True)
-		lineshape = lineshape_fn(
-			continuum_bin_centers[neighbour_slice] - continuum_bin_centers[i],
-			alpha_D[i],
-			gamma_L[i],
-		)
-		
-		result[neighbour_slice] += cumulative_strength[neighbour_slice] * lineshape / np.sum(lineshape)
-		
-	#print('    return', flush=True)
-	return result / continuum_bin_widths
+	return result

@@ -2,11 +2,12 @@
 
 import json
 import dataclasses as dc
-from typing import Any, Generator, Literal, ClassVar
+from typing import Any, Generator, Literal, ClassVar, Iterable
 import datetime as dt
 from pathlib import Path
 
 import numpy as np
+import numpy.lib.recfunctions
 
 from .utils import fetch
 from .utils import read
@@ -21,9 +22,8 @@ from .cfg.const import (
 	EXOMOL_API_INTERNAL_URL_START,
 	T_ref,
 	Dalton_cgs,
+	TRANS_STR_FLOAT32_FACTOR,
 )
-
-from exomol_helper.calc.spec_line_intensity import spec_line_intensity_lte, exp_c2_Epp, one_minus_exp_c2_nu
 
 import exomol_helper.qn_set_manager
 import exomol_helper.broad_file_manager
@@ -41,7 +41,13 @@ from exomol_helper.exomol_index_types import (
 	ExomolIsotopeDef,
 )
 
+import exomol_helper.calc.numba
+import exomol_helper.calc.numba.transition_states
+import exomol_helper.calc.numba.spec
+import exomol_helper.calc.numba.broadening
 
+#BYTES_DTYPE = np.dtype(np.uint8)
+BYTES_DTYPE = np.dtype(np.uint64)
 
 
 @dc.dataclass
@@ -175,7 +181,7 @@ class ExomolDatasetHolder:
 		return self._n_transitions
 	
 	@property
-	def states_dtype(self) -> list[tuple[str,Any],...]:
+	def states_dtype(self) -> np.dtype:
 		if self._states_dtype is None:
 			self._states_dtype = self.isotope_def.dataset.states.get_states_field_dtype()
 		return self._states_dtype
@@ -231,8 +237,12 @@ class ExomolDatasetHolder:
 	@property
 	def trans_dtype(self) -> list[tuple[str,Any]]:
 		if self._trans_dtype is None:
-			self._trans_dtype = np.dtype([('upper_id',int),('lower_id',int), ('einstein_A', float), ('wavenumber',float)][:self.trans_n_cols])
+			self._trans_dtype = np.dtype([('upper_id',np.int64),('lower_id',np.int64), ('einstein_A', np.float64), ('wavenumber',np.float64)][:self.trans_n_cols], align=True)
 		return self._trans_dtype
+	
+	@property
+	def trans32_dtype(self) -> list[tuple[str,Any]]:
+		return np.dtype([('upper_id',np.uint32),('lower_id',np.uint32), ('einstein_A', np.float32), ('wavenumber',np.float32)][:self.trans_n_cols], align=True)
 	
 	@property
 	def lower_state_names(self):
@@ -249,6 +259,11 @@ class ExomolDatasetHolder:
 	@property
 	def transition_state_names(self):
 		return (*self.lower_state_names, *self.upper_state_names)
+	
+	@property
+	def transition_state_quantum_number_names(self):
+		non_quantum_number_state_names = ('tau\'', 'tau"', 'E\'', 'E"')
+		return tuple(x for x in (*self.lower_state_names, *self.upper_state_names) if x not in non_quantum_number_state_names)
 	
 	@property
 	def broad_gas_names(self) -> tuple[str,...]:
@@ -312,12 +327,15 @@ class ExomolDatasetHolder:
 		lower_state_dtype = tuple((x, y) for x,y in zip(self.lower_state_names, (z[0].type for z in states_dtype.fields.values())))
 		upper_state_dtype = tuple((x, y) for x,y in zip(self.upper_state_names, (z[0].type for z in states_dtype.fields.values())))
 		
-		dtype = np.dtype([
-			('einstein_A', float),
-			('wavenumber', float),
-			*lower_state_dtype,
-			*upper_state_dtype,
-		])
+		dtype = np.dtype(
+			[
+				('einstein_A', float),
+				('wavenumber', float),
+				*lower_state_dtype,
+				*upper_state_dtype,
+			],
+			align=True
+		)
 		return dtype
 	
 	@property
@@ -330,8 +348,8 @@ class ExomolDatasetHolder:
 			('E\'', float), # upper state energy (in cm^{-1})
 			('g_tot"', int), # lower state degeneracy
 			('g_tot\'', int), # upper state degeneracy
-			('spec_line_factor_exp_E', float), # Part of the spectral line intensity
-			('spec_line_factor_one_minus_exp_wavenumber', float), # Part of the spectral line intensity
+			('spec_boltz_pop', float), # boltzman population part of the spectral line intensity
+			('spec_stim_emission', float), # stimulated_emission part of the spectral line intensity
 		]
 	
 	@property
@@ -347,11 +365,95 @@ class ExomolDatasetHolder:
 	
 	@property
 	def possible_qn_sets(self) -> dict[str, list[str]]:
+		"""
+		A dictionary mapping quantum number set codes (qn_codes) to the state names they use for all qn_codes that this dataset defines quantum numbers for
+		"""
 		if self._possible_qn_sets is None:
 			transition_state_names = self.transition_state_names
 			self._possible_qn_sets = dict((k,['J"',*v]) for k,v in exomol_helper.qn_set_manager.qn_set.items() if all(x in transition_state_names for x in v))
 			#_lgr.debug(f'{self._possible_qn_sets=}')
 		return self._possible_qn_sets
+	
+	@property
+	def broadening_data(self) -> tuple[dict[str,slice], np.ndarray, np.ndarray, np.ndarray]:
+		"""
+		Load broadening data into an array
+		"""
+		
+		# Count number of entries across all broadening files
+		n_broad_entries_dict = dict()
+		for bg_name, broad_url in self._api_broad_urls.items():
+			n_broad_entries_dict.setdefault(bg_name,0)
+			fpath = fetch.file_from_cache(broad_url, cache=EXOMOL_CACHE, return_fpath=True)
+			
+			with open(fpath, 'r') as f:
+				for aline in f:
+					n_broad_entries_dict[bg_name] += 1
+					
+		total_broad_entries = sum(n_broad_entries_dict.values())
+		
+		ts_dtype_dict = dict((x,y[0].type) for x,y in self.transition_states_dtype.fields.items())
+		
+		n = 0
+		broad_array_gas_slices = dict()
+		for bg_name, bgn in n_broad_entries_dict.items():
+			broad_array_gas_slices[bg_name] = slice(n,bgn)
+			n += bgn
+		
+		if 'self' not in broad_array_gas_slices:
+			broad_array_gas_slices['self'] = slice(0,0)
+		
+			
+		broad_array = np.zeros((total_broad_entries,), self.transition_states_dtype)
+		broad_comp_mask = np.zeros((total_broad_entries, broad_array.dtype.itemsize // BYTES_DTYPE.itemsize), dtype=bool) # if `True` we should compare this byte, otherwise skip it
+		broad_values = np.zeros((total_broad_entries,2), float) # (gamma, temp_exp)
+		
+		i_bg = dict()
+		
+		# populate broadening array
+		for bg_name, broad_url in self._api_broad_urls.items():
+			i_bg.setdefault(bg_name,0)
+			fpath = fetch.file_from_cache(broad_url, cache=EXOMOL_CACHE, return_fpath=True)
+			
+			with open(fpath, 'r') as f:
+				for aline in f:
+					split_line = aline.split()
+					code, gamma, temp_exp, Jpp = split_line[:4]
+					quantum_number_strings = split_line[4:]
+					Jpp = ts_dtype_dict['J"'](Jpp)
+				
+					quantum_numbers = []
+					for (name, value_string) in zip(self.possible_qn_sets[code][1:], quantum_number_strings):
+						type_converter = ts_dtype_dict[name]
+						quantum_numbers.append(type_converter(value_string) if not isinstance(type_converter, str) else value_string)
+					
+					qn_values = (Jpp,*quantum_numbers)
+					
+					#print(f'{broad_array[i_bg[bg_name]]=}')
+					#print(f'{self.possible_qn_sets[code]=}')
+					
+					#not_shared_names = [x for x in self.possible_qn_sets[code] if x not in broad_array.dtype.names]
+					#print(f'{not_shared_names=}')
+					
+					broad_array[self.possible_qn_sets[code]][i_bg[bg_name]] = qn_values
+					broad_values[i_bg[bg_name]] = (float(gamma), float(temp_exp))
+					
+					for name in self.possible_qn_sets[code]:
+						byte_start = broad_array.dtype.fields[name][1] / BYTES_DTYPE.itemsize
+						byte_end = byte_start + (broad_array.dtype.fields[name][0].itemsize / BYTES_DTYPE.itemsize)
+						
+						assert byte_start == int(byte_start) and byte_end == int(byte_end)
+						byte_start = int(byte_start)
+						byte_end = int(byte_end)
+						broad_comp_mask[i_bg[bg_name]][byte_start:byte_end] = True
+					
+					i_bg[bg_name] += 1
+		
+		
+		broad_array = broad_array.view(BYTES_DTYPE).reshape(-1,broad_array.dtype.itemsize//BYTES_DTYPE.itemsize)
+		
+		return broad_array_gas_slices, broad_array, broad_comp_mask, broad_values
+		
 	
 	@property
 	def broad_map(self) -> dict[str,dict[str,dict[tuple[Any,...],tuple[float,float]]]]:
@@ -431,7 +533,7 @@ class ExomolDatasetHolder:
 			#		...
 			#	}
 			
-			
+			ts_dtype_dict = dict((x,y[0].type) for x,y in self.transition_states_dtype.fields.items() if (x in self.transition_state_quantum_number_names))
 			
 			# Build `broad_map` for this dataset.
 			for bg_name, broad_url in self._api_broad_urls.items():
@@ -443,19 +545,18 @@ class ExomolDatasetHolder:
 						split_line = aline.split()
 						code, gamma, temp_exp, Jpp = split_line[:4]
 						quantum_number_strings = split_line[4:]
-						Jpp = int(Jpp)
+						Jpp = ts_dtype_dict['J"'](Jpp)
 					
-						ts_dtype_dict = dict((x,y[0].type) for x,y in self.transition_states_dtype.fields.items())
 						quantum_numbers = []
 						for (name, value_string) in zip(self.possible_qn_sets[code][1:], quantum_number_strings):
 							type_converter = ts_dtype_dict[name]
 							quantum_numbers.append(type_converter(value_string) if not isinstance(type_converter, str) else value_string)
 						
 						qn_values = (Jpp,*quantum_numbers)
-						dtype = [('J"', int)] + [(name,ts_dtype_dict[name]) for name in self.possible_qn_sets[code][1:]]
+						dtype = [(name,ts_dtype_dict[name]) for name in ('J"',*self.possible_qn_sets[code][1:])]
 						self._broad_map[bg_name].setdefault(code, dict())[qn_values] = (
 							np.array(qn_values, dtype=dtype),
-							(gamma, temp_exp)
+							(float(gamma), float(temp_exp))
 						)
 		return self._broad_map
 	
@@ -510,6 +611,7 @@ class ExomolDatasetHolder:
 		
 		# Paths at the top will be chosen first
 		possible_fpaths = (
+			trans_fpath.with_suffix('.bin32'),
 			trans_fpath.with_suffix('.bin'),
 			trans_fpath.with_suffix('.npy'),
 			trans_fpath.with_suffix('.npz'),
@@ -530,27 +632,33 @@ class ExomolDatasetHolder:
 			self,
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
+			trans_fpaths : None | Iterable[Path] = None # If present iterate over these files, otherwise iterate over all of them
 	) -> Generator[np.ndarray]:
 		
 		dt_start = dt.datetime.now()
 		_lgr.debug(f'Starting reading transitions at {dt_start}')		
 		_lgr.debug(f'Transition files have {self.trans_n_cols} columns.')
 		
-		trans_urls = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
+		if trans_fpaths is None:
+			trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
 		
-		yield from read.files_via_structured_array_chunk(
-				trans_urls,
+		for fpath, chunk in read.files_via_structured_array_chunk(
+				trans_fpaths,
 				dtype=self.trans_dtype,
 				delim=None,
 				chunk_size=chunk_size,
-		)
+				yield_fpath = True,
+		):
+			if fpath.suffix == '.bin32':
+				chunk['einstein_A'] /= TRANS_STR_FLOAT32_FACTOR
+			yield chunk
 		
 		dt_end = dt.datetime.now()
 		_lgr.debug(f'Finished reading transitions at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
 	
 	def convert_transition_files_to_fmt(
 			self, 
-			fmt : Literal['.npy', '.bin'],
+			fmt : Literal['.npy', '.bin', '.bin32'],
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
 	):
@@ -558,15 +666,9 @@ class ExomolDatasetHolder:
 		_lgr.info(f'Starting to convert transition files at {dt_start}')		
 		_lgr.info(f'Transition files have {self.trans_n_cols} columns.')
 		
-		trans_urls = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
-		#_lgr.info("Using the following transition urls:")
-		#for z in self.api_transition_urls[trans_files_slice]:
-		#for z in (fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True) for x in self.api_transition_urls[trans_files_slice]):
-		#	_lgr.info(f'    {z}')
-			
-		#raise NotImplementedError('TESTING')
+		old_trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
 		
-		for old_trans_fpath in trans_urls:
+		for old_trans_fpath in old_trans_fpaths:
 		
 			new_trans_fpath = old_trans_fpath.with_name(old_trans_fpath.name + fmt) if old_trans_fpath.suffix == '.trans' else old_trans_fpath.with_suffix(fmt)
 			_lgr.info(f'Converting {old_trans_fpath.name=} to {new_trans_fpath.name}')
@@ -580,22 +682,45 @@ class ExomolDatasetHolder:
 			try:
 				if fmt == '.bin':
 					with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
-						
-						for trans_chunk in read.iter_line_records_via_structured_array_chunk(
-								old_trans_fpath,
-								dtype=self.trans_dtype,
-								delim=None,
+						for trans_chunk in self.iter_transitions(
 								chunk_size=chunk_size,
+								trans_fpaths=[old_trans_fpath]
 						):
 							f.write(trans_chunk)
+				
+				elif fmt == '.bin32':
+					with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
+						new_chunk = np.empty((chunk_size,), dtype=self.trans32_dtype)
+						
+						for trans_chunk in self.iter_transitions(
+								chunk_size=chunk_size,
+								trans_fpaths=[old_trans_fpath]
+						):
+							# 32 bit floating point does not have enough exponent to represent the smallest line strength
+							# values. Therefore multiply by a factor to bring them into range. When reading, divide by that
+							# factor.
+							chunk_slice = tuple(slice(s) for s in trans_chunk.shape)
+							trans_chunk['einstein_A'] *= TRANS_STR_FLOAT32_FACTOR
+							
+							# Check that state ID numbers can fit into 32 bit unsigned integer
+							assert np.all(
+								(0 <= trans_chunk['lower_id']) 
+								& (trans_chunk['lower_id'] <= ((2**32) - 1))
+								& (0 <= trans_chunk['upper_id']) 
+								& (trans_chunk['upper_id'] <= ((2**32) - 1))
+							), f'State ID numbers must be within the range [0,{2**32-1}] to write to {fmt}'
+							
+							for name in trans_chunk.dtype.names:
+								new_chunk[name][chunk_slice] = trans_chunk[name]
+							
+							f.write(new_chunk)
+				
 				elif fmt == '.npy':
 					result = []
-					for trans_chunk in read.iter_line_records_via_structured_array_chunk(
-								old_trans_fpath,
-								dtype=self.trans_dtype,
-								delim=None,
-								chunk_size=chunk_size,
-						):
+					for trans_chunk in self.iter_transitions(
+							chunk_size=chunk_size,
+							trans_fpaths=[old_trans_fpath]
+					):
 							result.append(trans_chunk)
 					np.concatenate(result).save(new_trans_fpath)
 				else:
@@ -629,13 +754,47 @@ class ExomolDatasetHolder:
 		#upper_state_indices = np.zeros((chunk_size,), dtype=int)
 		
 		_lgr.info(f'Transition states are: {" ".join([x for x in self.transition_states_dtype.names])}')
-		states = self.states # local handle for faster access hopefully
+		#states = self.states # local handle for faster access hopefully
 		calc_wavenumber_flag = self.trans_n_cols < 4
-				
+		
+		
 		for i, trans_chunk in enumerate(self.iter_transitions(chunk_size=chunk_size, trans_files_slice=trans_files_slice)):
 			chunk_slice = slice(None, trans_chunk.size)
 			_lgr.debug(f'{trans_chunk.size=} {chunk_slice=} {chunk_size=}')
 			
+			trans_states_chunk_part = trans_states_chunk[chunk_slice]
+			
+			for state_name, lower_state_name, upper_state_name in zip(self.states_dtype.names, self.lower_state_names, self.upper_state_names):
+				exomol_helper.calc.numba.transition_states.transition_states_populate_state(
+					self.states[state_name],
+					trans_chunk['lower_id'],
+					trans_chunk['upper_id'],
+					trans_states_chunk_part[lower_state_name],
+					trans_states_chunk_part[upper_state_name]
+				)
+				#exomol_helper.calc.numba.transition_states.transition_states_populate_state.parallel_diagnostics(level=4)
+				#raise RuntimeError('Parallel diagnostics')
+				#print(f'{trans_states_chunk_part[lower_state_name]=}')
+			
+			if calc_wavenumber_flag:
+				exomol_helper.calc.numba.transition_states.transition_states_einstein_A_and_wavenumber(
+					trans_chunk['einstein_A'],
+					trans_states_chunk_part['E\''],
+					trans_states_chunk_part['E"'],
+					trans_states_chunk_part['einstein_A'],
+					trans_states_chunk_part['wavenumber'],
+				)
+			else:
+				trans_states_chunk_part['einstein_A'][...] = trans_chunk['einstein_A']
+				trans_states_chunk_part['wavenumber'][...] = trans_chunk['wavenumber']
+			
+			
+			#print(f'{trans_states_chunk_part=}')
+			
+			yield trans_states_chunk_part
+			
+			
+			"""
 			# NOTE: This loop is a bit of a bottleneck
 			
 			# NOTE: self.state['StateID'] is always one more than the index. Therefore can
@@ -663,6 +822,7 @@ class ExomolDatasetHolder:
 				np.copyto(trans_states_chunk['wavenumber'][chunk_slice], trans_chunk['wavenumber'])
 			
 			yield trans_states_chunk[chunk_slice]
+			"""
 		
 		dt_end = dt.datetime.now()
 		_lgr.info(f'Finished getting transition state information at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
@@ -674,9 +834,6 @@ class ExomolDatasetHolder:
 			trans_files_slice : slice = slice(None),
 	):		
 		line_data_chunk = np.empty((chunk_size,), dtype=self.line_data_dtype)
-		qn_acc_code_mask = np.zeros((chunk_size,), dtype=bool)
-		qn_code_mask = np.zeros((chunk_size,), dtype=bool)
-		
 		
 		Q_ref = self.partition_function_at(T_ref)
 		
@@ -687,103 +844,95 @@ class ExomolDatasetHolder:
 		broad_var_names_list = [[f'gamma_{bg_name}', f'n_{bg_name}'] for bg_name in self.broad_gas_names] # broadening coefficent names in order of broadeing gas names
 		broad_source_var_names = self.broad_source_var_names
 		
+		broad_array_gas_slices, broad_array, broad_comp_mask, broad_values = self.broadening_data
+		
 		
 		for trans_states_chunk in self.iter_transition_states(chunk_size=chunk_size, trans_files_slice=trans_files_slice):
 			chunk_slice = slice(None,len(trans_states_chunk))
+			line_data_chunk_part = line_data_chunk[chunk_slice]
 			
-			# Some line data is a straight copy from `trans_states_chunk`
-			line_data_chunk[cols_from_trans_states][chunk_slice] = trans_states_chunk[cols_from_trans_states][chunk_slice]
 			
-			# Some line data is calculated
-			line_data_chunk['spec_line_intensity'][chunk_slice] = spec_line_intensity_lte(
+			trans_states_chunk_bytes = trans_states_chunk.view(
+				BYTES_DTYPE
+			).reshape(-1,trans_states_chunk.dtype.itemsize // BYTES_DTYPE.itemsize)
+			
+			
+			#print(f'{trans_states_chunk=}')
+			
+			# When the wavenumber is zero we want to set the einstein_A to zero, and
+			# set the wavenumber to 1 to avoid NANs, but still get zero contribution from
+			# the line.
+			exomol_helper.calc.numba.copy_pair_if_value_then_const(
+				trans_states_chunk['wavenumber'],
+				trans_states_chunk['einstein_A'],
+				line_data_chunk_part['wavenumber'],
+				line_data_chunk_part['einstein_A'],
+				source_1_comp_value = 0,
+				dest_1_const=1,
+				dest_2_const=0,
+			)
+			
+			for name in (x for x in cols_from_trans_states if x not in ('wavenumber', 'einstein_A')):
+				exomol_helper.calc.numba.copy(
+					trans_states_chunk[name],
+					line_data_chunk_part[name]
+				)
+			
+			exomol_helper.calc.numba.spec.spec_line_intensity_lte_f(
 				T_ref,
 				Q_ref,
-				line_data_chunk['E"'][chunk_slice],
-				line_data_chunk['g_tot\''][chunk_slice],
-				line_data_chunk['einstein_A'][chunk_slice],
-				line_data_chunk['wavenumber'][chunk_slice],
+				line_data_chunk_part['E"'],
+				line_data_chunk_part['g_tot\''],
+				line_data_chunk_part['einstein_A'],
+				line_data_chunk_part['wavenumber'],
+				
+				out_boltz_pop = line_data_chunk_part['spec_boltz_pop'],
+				out_stim_emission = line_data_chunk_part['spec_stim_emission'],
+				out = line_data_chunk_part['spec_line_intensity'],
 			)
-			#spec_line_intensity_lte(
-			#	T_ref,
-			#	Q_ref,
-			#	line_data_chunk['E"'][chunk_slice],
-			#	line_data_chunk['g_tot\''][chunk_slice],
-			#	line_data_chunk['einstein_A'][chunk_slice],
-			#	line_data_chunk['wavenumber'][chunk_slice],
-			#	out = line_data_chunk['spec_line_intensity'][chunk_slice],
-			#)
 			
-			line_data_chunk["spec_line_factor_exp_E"][chunk_slice] = exp_c2_Epp(
-				T_ref,
-				line_data_chunk['E"'][chunk_slice]
-			)
-			#exp_c2_Epp(
-			#	T_ref,
-			#	line_data_chunk['E"'][chunk_slice],
-			#	out=line_data_chunk["spec_line_factor_exp_E"][chunk_slice]
-			#)
-			
-			line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][chunk_slice] = one_minus_exp_c2_nu(
-				T_ref,
-				line_data_chunk['wavenumber'][chunk_slice]
-			)
-			#one_minus_exp_c2_nu(
-			#	T_ref,
-			#	line_data_chunk['wavenumber'][chunk_slice],
-			#	out = line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][chunk_slice]
-			#)
-			
-			# Broadening coefficients must be matched to valid combinations of quantum numbers
-			
+			# NOTE: This is still the limiting factor
 			for bg_name, broad_var_names, broad_source_name in zip(self.broad_gas_names, broad_var_names_list, broad_source_var_names):
-				qn_acc_code_mask.fill(False) # reset accumulator for each broadening gas
+				broad_slice = broad_array_gas_slices[bg_name]
 				
-				for qn_code, qn_value_to_broad_map in self.broad_map.get(bg_name,dict()).items():
-					qn_code_var_names = self.possible_qn_sets[qn_code]
-					
-					for qn_vals, (qn_comparator, broad_var_vals) in qn_value_to_broad_map.items():
-						#_lgr.debug(f'{qn_vals=}')
-						#_lgr.debug(f'{trans_states_chunk[qn_code_var_names]=}')
-						#_lgr.debug(f'{qn_comparator=}')
-						
-						# select all lines that could potentially be valid for the current `qn_code` and `qn_vals`
-						qn_code_mask[chunk_slice] = trans_states_chunk[qn_code_var_names] == qn_comparator
-						
-						# de-select all lines that have already been assigned broadening coefficients
-						# as earlier entries take precidence over later entries.
-						# This gives us the actually valid lines
-						qn_code_mask[chunk_slice] &= (~qn_acc_code_mask[chunk_slice])
-						
-						# update the accumulator to include the actually valid lines we just worked out
-						qn_acc_code_mask[chunk_slice] |= qn_code_mask[chunk_slice]
-						
-						#_lgr.debug(f'{qn_code_mask[chunk_slice].size=}')
-						#_lgr.debug(f'{np.count_nonzero(qn_code_mask[chunk_slice])=}')
-						#_lgr.debug(f'{np.count_nonzero(qn_acc_code_mask[chunk_slice])=}')
-						
-						line_data_chunk[broad_var_names][chunk_slice][qn_code_mask[chunk_slice]] = broad_var_vals
-						line_data_chunk[broad_source_name][chunk_slice][qn_code_mask[chunk_slice]] = BroadeningSourceCode.BROAD_FILE
 				
-				# lines that were not selected by `qn_code` and `qn_vals` in `broad_map` should use default values
-				# for their broadening coefficients. 
 				
-				# Get default broadening coefficients for the current broadening gas, if we have defaults for the gas
-				# use them, otherwise use defaults for the dataset, if no defaults for the dataaset exist then use the
-				# emergency values
-				default_broad_vals = self.default_broad_vals.get(bg_name, None)
-				if default_broad_vals is not None:
-					line_data_chunk[broad_var_names][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = default_broad_vals
-					line_data_chunk[broad_source_name][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = BroadeningSourceCode.GAS_DEFAULT
-				elif len(self.fallback_broad_vals) == 2:
-					line_data_chunk[broad_var_names][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = self.fallback_broad_vals
-					line_data_chunk[broad_source_name][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = BroadeningSourceCode.ISO_DEFAULT
+				broad_array_part = broad_array[broad_slice]
+				broad_comp_mask_part = broad_comp_mask[broad_slice]
+				broad_values_part = broad_values[broad_slice]
+				
+				fallback_broad_vals = self.default_broad_vals.get(bg_name, None)
+				fallback_source_id = BroadeningSourceCode.GAS_DEFAULT
+				if fallback_broad_vals is None and len(self.fallback_broad_vals) == 2:
+					fallback_broad_vals = self.fallback_broad_vals
+					fallback_source_id = BroadeningSourceCode.ISO_DEFAULT
 				else:
-					line_data_chunk[broad_var_names][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = self.emergency_broad_vals
-					line_data_chunk[broad_source_name][chunk_slice][~(qn_acc_code_mask[chunk_slice])] = BroadeningSourceCode.EMERGENCY_FALLBACK
-		
+					fallback_broad_vals = self.emergency_broad_vals
+					fallback_source_id = BroadeningSourceCode.EMERGENCY_FALLBACK
+				
+				
+				
+				#ldc = np.lib.recfunctions.structured_to_unstructured(line_data_chunk[broad_var_names], float)
+				#print(f'{ldc=}')
+				
+				exomol_helper.calc.numba.broadening.assign_broadening_parameters(
+					trans_states_chunk_bytes,
+					broad_array_part,
+					broad_comp_mask_part,
+					broad_values_part[:,0],
+					broad_values_part[:,1],
+					BroadeningSourceCode.BROAD_FILE,
+					fallback_broad_vals[0],
+					fallback_broad_vals[1],
+					fallback_source_id,
+					line_data_chunk[broad_var_names[0]],
+					line_data_chunk[broad_var_names[1]],
+					line_data_chunk[broad_source_name]
+				)
 			
-			yield line_data_chunk[chunk_slice][~np.isnan(line_data_chunk['spec_line_intensity'][chunk_slice])]
-
+			yield line_data_chunk_part
+			
+		
 	
 	def partition_function_at(
 			self, 
@@ -842,7 +991,6 @@ class ExomolDatasetHolder:
 			trans_files_slice : slice = slice(None),
 	) -> Generator[tuple[np.ndarray, np.ndarray, tuple[np.ndarray], np.ndarray]]:
 		
-		T = T[:,None]
 		n_temps = T.size
 		
 		Q_ratio =  self.partition_function_at(T_ref) / self.partition_function_at(T)
@@ -856,12 +1004,11 @@ class ExomolDatasetHolder:
 		pseudo_continuum_var_name_pair_tuple = self.pseudo_continuum_var_name_pairs
 		
 		bin_indices = np.empty((T.size, chunk_size,), dtype=int)
-		bin_indices_valid_mask = np.empty((T.size, chunk_size,), dtype=bool)
 		
-		wavenumber_gt_zero_mask = np.zeros((chunk_size,), dtype=bool)
+		#wavenumber_gt_zero_mask = np.ones((chunk_size,), dtype=bool)
 		
-		one_minus_exp_c2_nu_ratio = np.empty((T.size, chunk_size,), dtype=float)
-		
+		stimulated_emission_ratio = np.empty((T.size, chunk_size,), dtype=float)
+		boltz_pop_ratio = np.empty((T.size, chunk_size,), dtype=float)
 		
 		strong_line_mask = np.empty((T.size, chunk_size,), dtype=bool)
 		weak_line_mask = np.empty((T.size, chunk_size,), dtype=bool)
@@ -872,82 +1019,155 @@ class ExomolDatasetHolder:
 		n_weak_lines_in_continuum = np.zeros((T.size,), dtype=int)
 		n_weak_lines_outside_continuum = np.zeros((T.size,), dtype=int)
 	
+		n_weak_indices = np.zeros((T.size,), dtype=int)
+		
+		# Build strutured array views for later
+		pcc_struct_names = [x[0] for x in pseudo_continuum_var_name_pair_tuple]
+		pcc_view = np.lib.recfunctions.structured_to_unstructured(
+			pseudo_continuum_contribution[pcc_struct_names],
+			dtype = pseudo_continuum_contribution.dtype.fields[pcc_struct_names[0]][0],
+			copy = False
+		)
+		assert pcc_view.base is not None, "Must be able to build a view of pseudo_continuum_contribution"
+		
+		# get structured array view names for later
+		ldc_struct_names = [x[1] for x in pseudo_continuum_var_name_pair_tuple]
+		
 		
 		for line_data_chunk in self.iter_line_data(chunk_size=chunk_size, trans_files_slice=trans_files_slice):
-			chunk_slice = slice(None, line_data_chunk.size)
-			_lgr.info(f'{line_data_chunk.size=}')
 			
-			# set continuum contribution for this chunk to zero
+			chunk_slice = slice(None, line_data_chunk.size)
+			strong_line_mask_part = strong_line_mask[:, chunk_slice]
+			
+			stimulated_emission_ratio_part = stimulated_emission_ratio[:,chunk_slice]
+			boltz_pop_ratio_part = boltz_pop_ratio[:,chunk_slice]
+			line_strengths_at_temp_part = line_strengths_at_temp[:, chunk_slice]
+			weak_line_mask_part = weak_line_mask[:, chunk_slice]
+			bin_indices_part = bin_indices[:, chunk_slice]
+			
+			# Set all accumulators to zero
+			n_weak_indices.fill(0)
 			pseudo_continuum_contribution.fill(0.0)
 			strong_line_mask.fill(False)
+			stimulated_emission_ratio.fill(1.0)
 			
-			wavenumber_gt_zero_mask[chunk_slice] = line_data_chunk['wavenumber'] > 0
-			one_minus_exp_c2_nu_ratio.fill(1.0)
 			
-			#one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]] = (
+			
+			ldc_view = np.lib.recfunctions.structured_to_unstructured(
+				line_data_chunk[ldc_struct_names],
+				dtype = line_data_chunk.dtype.fields[ldc_struct_names[0]][0],
+				copy = False
+			)
+			assert ldc_view.base is not None, "Must be able to build a view of `line_data_chunk`"
+			"""
+			
+			# NOTE: We need to have any entries in `line_data_chunk` that have problematic values to have `spec_line_intensity` set to zero
+			# by this point. That way erroneous values will not have any effect on the output.
+			
+			_lgr.info(f'{line_data_chunk.size=}')
+			#print(f'{np.count_nonzero(np.isnan(line_data_chunk['spec_line_intensity']))=}')
+			#print(f'{np.count_nonzero(line_data_chunk['wavenumber'] == 0)=}')
+			
+			# set continuum contribution for this chunk to zero
+			
+			
+			#wavenumber_gt_zero_mask[chunk_slice] = line_data_chunk['wavenumber'] > 0
+			
+			
+			#stimulated_emission_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]] = (
 			#	one_minus_exp_c2_nu(T_ref,line_data_chunk['wavenumber'][wavenumber_gt_zero_mask[chunk_slice]]) 
 			#	/ one_minus_exp_c2_nu(T, line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][wavenumber_gt_zero_mask[chunk_slice]])
 			#)
-			one_minus_exp_c2_nu(T, line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][wavenumber_gt_zero_mask[chunk_slice]], out=one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]])
-			np.divide(one_minus_exp_c2_nu(T_ref,line_data_chunk['wavenumber'][wavenumber_gt_zero_mask[chunk_slice]]), one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]], out=one_minus_exp_c2_nu_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]])
 			
-			_lgr.info(f'{one_minus_exp_c2_nu_ratio[:,chunk_slice].shape=}')
-			_lgr.info(f'{Q_ratio=}')
-			_lgr.info(f'{(exp_c2_Epp(T,line_data_chunk['E"'])/line_data_chunk["spec_line_factor_exp_E"]).shape=}')
-			
-			line_strengths_at_temp[:, chunk_slice] = (
-				line_data_chunk['spec_line_intensity'] 
-					* Q_ratio 
-					* (exp_c2_Epp(T,line_data_chunk['E"'])/line_data_chunk["spec_line_factor_exp_E"]) 
-					* one_minus_exp_c2_nu_ratio[:,chunk_slice]
+			"""
+			exomol_helper.calc.numba.spec.stimulated_emission_v(
+				line_data_chunk['wavenumber'],
+				T,
+				out = stimulated_emission_ratio_part	
+			)
+			exomol_helper.calc.numba.divide_2d_1d(
+				stimulated_emission_ratio_part,
+				line_data_chunk['spec_stim_emission'],
+				out = stimulated_emission_ratio_part
 			)
 			
-			strong_line_mask[:,chunk_slice] = line_strengths_at_temp[:,chunk_slice] > continuum_line_intensity_cutoff
-			weak_line_mask = ~strong_line_mask
+			exomol_helper.calc.numba.spec.boltzmann_population_v(
+				line_data_chunk['E"'],
+				T,
+				out = boltz_pop_ratio_part	
+			)
+			exomol_helper.calc.numba.divide_2d_1d(
+				boltz_pop_ratio_part,
+				line_data_chunk['spec_boltz_pop'],
+				out = boltz_pop_ratio_part
+			)
 			
-			n_strong_lines[...] = np.count_nonzero(strong_line_mask[:,chunk_slice], axis=1)
-			n_weak_lines[...] = line_data_chunk.size - n_strong_lines
+			exomol_helper.calc.numba.spec.line_strength_at_temp(
+				Q_ratio,
+				line_data_chunk['spec_line_intensity'],
+				stimulated_emission_ratio_part,
+				boltz_pop_ratio_part,
+				out = line_strengths_at_temp_part
+			)
 			
-			_lgr.info(f'{np.min(line_data_chunk['wavenumber'])=} {np.max(line_data_chunk['wavenumber'])=}')
-			_lgr.info(f'{np.min(line_strengths_at_temp[chunk_slice])=} {np.max(line_strengths_at_temp[chunk_slice])=}')
-			_lgr.info(f'{n_strong_lines=} {n_weak_lines=}')
+			exomol_helper.calc.numba.is_gt_2d_0d(
+				line_strengths_at_temp_part,
+				continuum_line_intensity_cutoff,
+				out = strong_line_mask_part,
+			)
 			
-			# Place continuum lines into continuum
-			# PLACEHOLDER IMPLEMENTATION FOR NOW
+			exomol_helper.calc.numba.logical_not_2d(
+				strong_line_mask_part,
+				out = weak_line_mask_part
+			)
 			
+			exomol_helper.calc.numba.count_true_2d_to_1d(
+				strong_line_mask_part,
+				out_count=n_strong_lines,
+			)
 			
-			for j in range(n_temps):
-				bin_indices[j,:n_weak_lines[j]] = np.searchsorted(continuum_bin_edges, line_data_chunk['wavenumber'][chunk_slice][weak_line_mask[j,chunk_slice]])
-				bin_indices[j] -= 1 # the result of the above will be between [0,continuum_bin_edges.size], therefore subtracting one will give correct bins indices.
-				
-				bin_indices_valid_mask[j,:n_weak_lines[j]] = (bin_indices[j,:n_weak_lines[j]] >= 0) & (bin_indices[j,:n_weak_lines[j]] < cont_n_bins)
-				bin_indices_valid_mask[j,n_weak_lines[j]:] = False
+			#print(f'{np.count_nonzero(strong_line_mask_part, axis=1)=}')
+			n_weak_lines = line_data_chunk.size - n_strong_lines
 			
-			selected_bin_indices = tuple(bin_indices_part[bin_indices_valid_mask_part] for bin_indices_part, bin_indices_valid_mask_part in zip(bin_indices, bin_indices_valid_mask))
+			#print(f'{np.count_nonzero(weak_line_mask_part)=}')
 			
+			exomol_helper.calc.numba.get_valid_bin_indices_of_sets(
+				continuum_bin_edges,
+				line_data_chunk['wavenumber'],
+				weak_line_mask_part,
+				out_indices = bin_indices_part,
+				out_n_indices = n_weak_indices,
+			)
 			
-			n_weak_lines_in_continuum[...] = np.sum(bin_indices_valid_mask, axis=1)
-			n_weak_lines_outside_continuum[...] = n_weak_lines - n_weak_lines_in_continuum
+			#print(f'{n_weak_indices=}')
+			#print(f'{bin_indices_part=}')
+			#print(f'{np.count_nonzero(weak_line_mask_part)=}')
+			
+			exomol_helper.calc.numba.count_true_2d_to_1d(
+				weak_line_mask_part,
+				out_count = n_weak_lines_in_continuum,
+			)
+			
+			np.subtract(n_weak_lines, n_weak_lines_in_continuum, out=n_weak_lines_outside_continuum)
+			
 			_lgr.info(f'{n_weak_lines_in_continuum=} {n_weak_lines_outside_continuum=}')
 			
-			# This sets the continuum contribution from the weak lines that are inside the continuum wavelength range
-			for j in range(n_temps):
-				weak_line_mask_part = weak_line_mask[j,chunk_slice]
-				pc_line_strengths = line_strengths_at_temp[j,chunk_slice][weak_line_mask_part]
 			
-				pseudo_continuum_contribution['line_strength_sum'][j,selected_bin_indices[j]] += pc_line_strengths
-				
+			exomol_helper.calc.numba.spec.accumulate_pseudocontinuum(
+				weak_line_mask_part,
+				bin_indices_part,
+				line_strengths_at_temp_part,
+				pseudo_continuum_contribution['line_strength_sum'],
+				ldc_view,
+				pcc_view
+			)
 			
-				for str_weighted_var_name, var_name in pseudo_continuum_var_name_pair_tuple:
-					pseudo_continuum_contribution[str_weighted_var_name][j,selected_bin_indices[j]] += pc_line_strengths * line_data_chunk[var_name][weak_line_mask_part]
-			
-			_lgr.info('Continuum contribution calculated')
 			
 			
 			yield (
 				n_strong_lines, 
 				n_weak_lines_in_continuum, 
-				(line_data_chunk[strong_line_mask[j,chunk_slice]] for j in range(n_temps)), 
+				(line_data_chunk[strong_line_mask_part[j]] for j in range(n_temps)), 
 				pseudo_continuum_contribution
 			)
 			_lgr.info('strong lines and continuum data outputted')

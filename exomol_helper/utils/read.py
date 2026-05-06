@@ -237,7 +237,37 @@ def load_line_records_into_structured_array_by_chunks(
 
 
 
-
+def bin_file_into_structured_array_chunks(
+	fpath : Path,
+	chunk_size : int = 1_000_000,
+	dtype : None | np.dtype = None,
+	progress_tracker : None | BaseProgressTracker = None
+	
+) -> Generator[np.ndarray]:
+	n_bytes_read = 0
+	prev_n_bytes_read = 0
+	f = exomol_helper.utils.structured_array.StructuredArrayFile(fpath, 'rb',)
+	result = f.read(count = chunk_size)
+	
+	mutate_result = False
+	if dtype is not None and dtype != result.dtype:
+		mutate_result = True
+		chunk = np.zeros((chunk_size,), dtype=dtype)
+	
+	
+	while result.size > 0:
+		if mutate_result:
+			for name in result.dtype.names:
+				chunk[name][*(slice(s) for s in result.shape)] = result[name]
+			result = chunk
+		
+		n_bytes_read = f.tell()
+		if progress_tracker is not None:
+			progress_tracker.set(result.size, n_bytes_read - prev_n_bytes_read)
+		prev_n_bytes_read = n_bytes_read
+		
+		yield result
+		result = f.read(count = chunk_size)
 
 def files_via_structured_array_chunk(
 		fpaths : str | Path | list[str | Path], 
@@ -249,6 +279,7 @@ def files_via_structured_array_chunk(
 		mutator : None | Callable[[Iterable],Iterable] = None,
 		line_mutator : None | Callable[[str], None|str] = None,
 		progress_tracker : None | BaseProgressTracker = None,
+		yield_fpath : bool = False,
 ):
 	_lgr.info('files_via_structured_array_chunk(...)')
 	
@@ -272,7 +303,7 @@ def files_via_structured_array_chunk(
 			ftype = fpath.with_suffix('').suffix
 		
 		if ftype in ('.trans'):
-			yield from iter_line_records_via_structured_array_chunk(
+			gen = iter_line_records_via_structured_array_chunk(
 				fpath,
 				dtype,
 				widths,
@@ -283,23 +314,24 @@ def files_via_structured_array_chunk(
 				line_mutator,
 				progress_tracker=progress_tracker,
 			)
-		elif ftype in ('.bin',):
+			if yield_fpath:
+				for chunk in gen:
+					yield fpath, chunk
+			else:
+				yield from gen
+		elif ftype in ('.bin','.bin32'):
 			
-			chunk_number = 0
-			n_bytes_read = 0
-			prev_n_bytes_read = 0
-			f = exomol_helper.utils.structured_array.StructuredArrayFile(fpath, 'rb')
-			result = f.read(count = chunk_size)
-			
-			while result.size > 0:
-				chunk_number += 1
-				n_bytes_read = f.tell()
-				progress_tracker.set(result.size, n_bytes_read - prev_n_bytes_read)
-				prev_n_bytes_read = n_bytes_read
-				
-				yield result
-				result = f.read(count = chunk_size)
-				
+			gen = bin_file_into_structured_array_chunks(
+				fpath,
+				chunk_size=chunk_size,
+				dtype=dtype,
+				progress_tracker=progress_tracker
+			)
+			if yield_fpath:
+				for chunk in gen:
+					yield fpath, chunk
+			else:
+				yield from gen
 				
 				
 		elif ftype in ('.npy',):
@@ -309,7 +341,10 @@ def files_via_structured_array_chunk(
 			n = chunk_size
 			while n < array.size:
 				progress_tracker.set(chunk_size, array.nbytes*(chunk_size/array.shape[0]))
-				yield array[i:n]
+				if yield_fpath:
+					yield fpath, array[i:n]
+				else:
+					yield array[i:n]
 				i += chunk_size
 				n += chunk_size
 		
@@ -327,8 +362,10 @@ def files_via_structured_array_chunk(
 			
 			while np.any(n < s):
 				progress_tracker.set(n - m, b*((m-n)/s))
-				
-				yield tuple(a[_i : _n] if _n < _s else a[0:0] for a, _i, _n, _s in zip(arrays, i, n, s))
+				if yield_fpath:
+					yield fpath, tuple(a[_i : _n] if _n < _s else a[0:0] for a, _i, _n, _s in zip(arrays, i, n, s))
+				else:
+					yield tuple(a[_i : _n] if _n < _s else a[0:0] for a, _i, _n, _s in zip(arrays, i, n, s))
 				m[...] = n
 				i += chunk_size
 				n += chunk_size

@@ -9,9 +9,8 @@ import exomol_helper.utils.dtype
 
 from .module_var import ModuleVar
 
-HDR_FIND_FIRST_BRACE_WITHIN = 32
 HDR_MAX_SIZE = 1024 * 1024
-BRACE_BYTE =  b'{'[0]
+NULL_BYTE =  b'\0'[0]
 
 
 module_progress_sink : ModuleVar = ModuleVar(
@@ -28,7 +27,6 @@ class StructuredArrayFile:
 	def __init__(
 			self, 
 			fpath, mode : None | Literal['wb', 'rb'] = None,
-			
 	):
 		self.fpath = fpath
 		self.mode = None
@@ -50,6 +48,7 @@ class StructuredArrayFile:
 		self.close()
 	
 	def open(self, mode : Literal['wb', 'rb']) -> Self:
+		
 		assert mode in ('wb', 'rb'), "`mode` must be one of ('wb', 'rb')"
 		
 		if self.fhdl is not None:
@@ -82,12 +81,17 @@ class StructuredArrayFile:
 	
 	def write_header(self, arr : np.ndarray | np.dtype, encoding : str = 'ascii'):
 		if isinstance(arr, np.dtype):
-			self.fhdl.write(exomol_helper.utils.dtype.to_string(arr).encode(encoding))
+			dtype_bytes = exomol_helper.utils.dtype.to_string(arr).encode(encoding)
 		else:
-			self.fhdl.write(exomol_helper.utils.dtype.to_string(arr.dtype).encode(encoding))
+			dtype_bytes = exomol_helper.utils.dtype.to_string(arr.dtype).encode(encoding)
 		
+		# align to 32 bit boundary, always end with atleast one null byte
+		dtype_bytes += b'\0'*(4 - (len(dtype_bytes) % 4))
+		
+		
+		self.header_byte_end = len(dtype_bytes)+1
+		self.fhdl.write(dtype_bytes)
 		self.header_written = True
-		self.header_byte_end = self.tell()
 		
 	def write(self, arr : np.ndarray):
 		assert self.mode in self.class_writable_modes, f"Must have `mode` in {self.class_writable_modes} to write"
@@ -103,26 +107,18 @@ class StructuredArrayFile:
 	
 	def read_header(self, encoding : str = 'ascii'):
 		#print('reading dtype', flush=True)
-		hdr_part = b''
+		# Read 4 bytes at a time until string ends with null character
+		hdr_part = self.fhdl.read(4)
+		while hdr_part[-1] != NULL_BYTE and len(hdr_part) <= HDR_MAX_SIZE:
+			hdr_part += self.fhdl.read(4)
 		
-		found_first_brace = False
-		while len(hdr_part) < HDR_FIND_FIRST_BRACE_WITHIN:
-			hdr_part += self.fhdl.read(1)
-			if hdr_part[-1] == BRACE_BYTE:
-				found_first_brace = True
-				break
+		if len(hdr_part) > HDR_MAX_SIZE:
+			raise RuntimeError(f'Header exceeded maximum size ({HDR_MAX_SIZE} bytes). First 128 bytes: {hdr_part[:128]}')
 		
-		if not found_first_brace:
-			raise RuntimeError(f'Could not find first "{{" within {HDR_FIND_FIRST_BRACE_WITHIN} bytes. Got "{hdr_part}"')
+		#print(f'{hdr_part=}')
 		
-		# Probably an inefficient way of reading this but need to take it byte by byte
-		while len(hdr_part) < HDR_MAX_SIZE and (hdr_part.count(b'{') !=hdr_part.count(b'}')) :
-			hdr_part += self.fhdl.read(1)
-
-		if (hdr_part.count(b'{') == hdr_part.count(b'}')):
-			return hdr_part.decode(encoding)
-		else:
-			raise RuntimeError(f'Could not read header. Got "{hdr_part}"')
+		self.header_byte_end = len(hdr_part)+1
+		return hdr_part.decode(encoding)
 	
 	
 	def read(self, count : int = -1) -> np.ndarray:	

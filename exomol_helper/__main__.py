@@ -8,6 +8,7 @@ import datetime as dt
 import numpy as np
 
 from exomol_helper.cfg.const import (
+	CHUNK_SIZE,
 	REPO_LOCAL,
 	T_ref,
 	P_ref,
@@ -28,6 +29,7 @@ import exomol_helper.utils.dtype
 import exomol_helper.utils.structured_array
 
 import exomol_helper.calc.pseudo_continuum
+import exomol_helper.calc.spec
 
 import logging
 from exomol_helper.cfg.log import pkg_logger, progress_lgr
@@ -168,26 +170,27 @@ def exomol_states(
 		n_states = ds_holder.states_shape
 		print(f'    number: {n_states}')
 		
+		print(f'    Minimum ID: {np.min(ds_holder.states['StateID'])} Maximum ID: {np.max(ds_holder.states['StateID'])}')
+		
 		states_dtype = ds_holder.states_dtype
 		
 		#states_names = ' '.join(x[0] for x in states_dtype)
 		states_names = ' '.join(ds_holder.states_short_names)
 		print(f'    names: {states_names}')
 		
-		states_types = ' '.join(str(x[1])[8:-2] if isinstance(x[1],type) else str(x[1]) for x in states_dtype)
+		states_types = ' '.join(exomol_helper.utils.dtype.field_type_strings(states_dtype))
 		print(f'    types: {states_types}')
 		
-		states = ds_holder.states
 		print(f'    Printing states in slice {slice_to_print}:')
 		
-		for state in states[slice_to_print]:
+		for state in ds_holder.states[slice_to_print]:
 			print(f'        {state}')
 
 
 def exomol_trans(
 		dataset_holders : list[ExomolDatasetHolder],
 		n_to_print : int = 10,
-		chunk_size : int = 1_000_000,
+		chunk_size : int = CHUNK_SIZE,
 ):
 	import exomol_helper.cfg.log # for later
 	
@@ -237,7 +240,7 @@ def exomol_trans(
 		print(f'    Transition states columns {" ".join((x for x in ds_holder.transition_states_dtype.names))}')
 		print(f'    First {n_to_print} transition states information:')
 		do_stop = False
-		chunk_size = 1_000_000
+		chunk_size = CHUNK_SIZE
 		for j, trans_states_chunk in enumerate(ds_holder.iter_transition_states(chunk_size=chunk_size)):
 			for i, trans_states in enumerate(trans_states_chunk):
 				print(f'        {trans_states}')
@@ -251,7 +254,7 @@ def exomol_trans(
 		print(f'    Line data columns: {" ".join([x for x in ds_holder.line_data_dtype.names])}')
 		print(f'    First {n_to_print} line data:')
 		do_stop = False
-		chunk_size = 1_000_000
+		chunk_size = CHUNK_SIZE
 		for j, line_data_chunk in enumerate(ds_holder.iter_line_data(chunk_size=chunk_size)):
 			for i, line_data in enumerate(line_data_chunk):
 				print(f'        {line_data}')
@@ -342,7 +345,7 @@ def exomol_calc_continuum(
 		continuum_wavenumber_max : float = 100_000,
 		continuum_n_bins : int = 1_000,
 		continuum_bin_spacing : Literal['lin', 'log'] = 'lin',
-		chunk_size : int = 1_000_000,
+		chunk_size : int = CHUNK_SIZE,
 ):
 	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	progress_lgr.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
@@ -438,6 +441,8 @@ def exomol_read_continuum_data(
 		stop : int = 10,
 		step : int = 1,
 		temp : None | float = None,
+		eps : None | float = None,
+		extra_plots : int = 0,
 ):
 	assert fname is not None, "Must have name of files to work with"
 		
@@ -519,6 +524,7 @@ def exomol_read_continuum_data(
 		with exomol_helper.utils.structured_array.StructuredArrayFile(continuum_data_fpath, 'rb') as f:
 			print('    Reading continuum data.')
 			continuum_data = f.read()
+		
 		print(f'{continuum_data.shape=}')
 		print('    Continuum data columns:')
 		print(f'        {" | ".join(continuum_data.dtype.names)}')
@@ -540,15 +546,32 @@ def exomol_read_continuum_data(
 			
 		print(f'        bin edge    {continuum_bin_edges[-1]}')
 		
+		continuum_data_means = np.zeros_like(continuum_data)
 		
 		
-		if len(continuum_data) == 0:
+		
+		continuum_data_means['line_strength_sum'] = continuum_data['line_strength_sum']
+		if eps is not None: # Account for zeros (or very small negative numbers)
+			min_line_str_sum = np.min(continuum_data_means['line_strength_sum'])
+			if min_line_str_sum < (-1*eps):
+				raise RuntimeError(f'Minimum line strength sum is less than defined limit ({-1*eps}). Cannot have -ve values for line strength sums')
+			elif min_line_str_sum <= 0: 
+				pkg_logger.warn(f'Minimum line strength sum is less than zero, but larger than defined limit ({-1*eps}), setting to a small value...')
+				continuum_data_means['line_strength_sum'][continuum_data_means['line_strength_sum'] <= 0] = eps
+		else:
+			if np.count_nonzero(continuum_data_means['line_strength_sum'] < 0) > 0:
+				raise RuntimeError('Some line strength sums are less than zero. Cannot have -ve values for line strength sums')
+		
+		# Calculate line strength weighted means
+		for field_name in (x for x in continuum_data_means.dtype.names if x != 'line_strength_sum'):
+			continuum_data_means[field_name] = continuum_data[field_name] / continuum_data_means['line_strength_sum']
+		
+		if len(continuum_data_means) == 0:
 			print('    No data to plot!')
 		else:
 		
 			import matplotlib.pyplot as plt
 			from .plotters.continuum_plotter import ContinuumPlotter
-			from .plotters.linedata_plotter import LinedataPlotter
 			
 			print('    Plotting data...', flush=True)
 			
@@ -564,18 +587,27 @@ def exomol_read_continuum_data(
 			chosen_gas_amb_frac = broad_gas_amb_fracs[chosen_gas_idx]
 			print(f'    {chosen_gas_idx=} {chosen_gas=} {chosen_gas_amb_frac=}', flush=True)
 			
+			continuum_bin_mids = 0.5*(continuum_bin_edges[:-1] + continuum_bin_edges[1:])
+			
+			if extra_plots >= 1:
+				for field_name in continuum_data_means.dtype.names:
+					plt.figure()
+					plt.title(f'{field_name}\n[num < 0: {np.count_nonzero(continuum_data_means[field_name] < 0)}] [num == 0: {np.count_nonzero(continuum_data_means[field_name] == 0)}] [num nan: {np.count_nonzero(np.isnan(continuum_data_means[field_name]))}]')
+					plt.plot(continuum_bin_mids, continuum_data_means[field_name])
+				plt.show()
+			
 			pseudo_continuum_data = exomol_helper.calc.pseudo_continuum.pseudo_continuum(
 				1,
 				temp,
 				ds_holder.partition_function_at(temp),
-				0.5*(continuum_bin_edges[:-1] + continuum_bin_edges[1:]),
+				continuum_bin_mids,
 				np.diff(continuum_bin_edges),
-				continuum_data['line_strength_sum'],
-				continuum_data['strength_weighted_sum_E"'],
-				continuum_data['strength_weighted_gamma_self'],
-				continuum_data['strength_weighted_n_self'],
-				continuum_data[f'strength_weighted_gamma_{chosen_gas}'],
-				continuum_data[f'strength_weighted_n_{chosen_gas}'],
+				continuum_data_means['line_strength_sum'],
+				continuum_data_means['strength_weighted_sum_E"'],
+				continuum_data_means['strength_weighted_gamma_self'],
+				continuum_data_means['strength_weighted_n_self'],
+				continuum_data_means[f'strength_weighted_gamma_{chosen_gas}'],
+				continuum_data_means[f'strength_weighted_n_{chosen_gas}'],
 				ds_holder.iso_mass_cgs,
 				chosen_gas_amb_frac,
 				ds_holder.partition_function_at(temp_cont),
@@ -592,7 +624,19 @@ def exomol_read_continuum_data(
 			if all(cont_edge_diff[:-1] < cont_edge_diff[1:]):
 				pltr.xlog()
 			
-			LinedataPlotter(ax=pltr.ax).plot(line_data)
+			pltr.ax.plot(
+				line_data['wavenumber'], 
+				exomol_helper.calc.spec.line_strengths(line_data, np.array([temp]), ds_holder.partition_function, T_ref, squeeze=True),
+				'.',
+				markersize=1,
+				alpha=0.1,
+				ls='none',
+				zorder=-1,
+				label = 'strong lines',
+			)
+			
+			pltr.ax.set_title('Absorption coefficient of pseudo-continuum and strong lines')
+			pltr.fig.legend()
 			
 			plt.show()
 			print('    Data plotted', flush=True)
@@ -601,7 +645,7 @@ def exomol_read_continuum_data(
 def exomol_convert_trans(
 		dataset_holders : list[ExomolDatasetHolder],
 		fmt : str,
-		chunk_size : int = 1_000_000,
+		chunk_size : int = CHUNK_SIZE,
 		n_files : None | int = None,
 ):
 
@@ -686,12 +730,12 @@ if __name__=='__main__':
 	
 	trans_parser = subparsers.add_parser('trans', help='Show information about transitions of specified data')
 	trans_parser.set_defaults(func = exomol_trans)
-	trans_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=1_000_000)
+	trans_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
 	trans_parser.add_argument('-n', '--n_to_print', type=int, help='number of lines of data to print', default=10)
 	
 	calc_line_data_parser = subparsers.add_parser('calc_line_data', help='calculate line data')
 	calc_line_data_parser.set_defaults(func = exomol_calc_line_data)
-	calc_line_data_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=1_000_000)
+	calc_line_data_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
 	
 	read_line_data_parser = subparsers.add_parser('read_line_data', help='read saved line data files')
 	read_line_data_parser.set_defaults(func = exomol_read_line_data)
@@ -707,7 +751,7 @@ if __name__=='__main__':
 	calc_continuum_parser.add_argument('-b', '--continuum_wavenumber_max', type=float, help='Maximum wavenumber of continuum', default=100_000)
 	calc_continuum_parser.add_argument('-n', '--continuum_n_bins', type=int, help='Number of bins in the continuum', default=1_000)
 	calc_continuum_parser.add_argument('-s', '--continuum_bin_spacing', type=str, choices=('lin', 'log'), help='Spacing of continuum bins', default='lin')
-	calc_continuum_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=1_000_000)
+	calc_continuum_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
 	
 	read_continuum_data_parser = subparsers.add_parser('read_continuum_data', help='read saved line data files')
 	read_continuum_data_parser.set_defaults(func = exomol_read_continuum_data)
@@ -716,11 +760,14 @@ if __name__=='__main__':
 	read_continuum_data_parser.add_argument('-m', '--stop', type=int, help='stop of slice to print (0 is "past the end", so selects all until end) endpoint is inclusive', default=10)
 	read_continuum_data_parser.add_argument('-l', '--step', type=int, help='step of slice to print', default=1)
 	read_continuum_data_parser.add_argument('-t', '--temp', type=float, help='Temperature to calculate pseudo-continuum at', default=None)
+	read_continuum_data_parser.add_argument('-e', '--eps', type=float, help='If present, line strength sums with a magnitude smaller than this are treated as a truncation error, and -ve values with a larger magnitude are treated as a problem. Otherwise any -ve line strength sums are treated as errors.', default=None)
+	read_continuum_data_parser.add_argument('-p', '--extra_plots', action='count', help='Will show extra plots depending upon the number of times passed', default=0)
+	
 	
 	convert_trans_parser = subparsers.add_parser('convert_trans', help='Convert transition data to new format')
 	convert_trans_parser.set_defaults(func = exomol_convert_trans)
 	convert_trans_parser.add_argument('-f', '--fmt', type=str, help='Format to convert transition files to', default='.bin')
-	convert_trans_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=1_000_000)
+	convert_trans_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
 	convert_trans_parser.add_argument('-n', '--n_files', type=int, help='Number of files to convert (starting from the first available, default is to convert all)', default=None)
 	
 	#download_selection_group = download_parser.add_mutually_exclusive_group(required=True)
@@ -748,13 +795,15 @@ if __name__=='__main__':
 		if arg_dict.get(k, arg_not_present_sentinel) is None:
 			arg_dict[k] = v
 	
+	func = arg_dict.pop('func')
+	
 	pkg_logger.info('## ARGUMENTS ##')
 	for k,v in arg_dict.items():
 		pkg_logger.info(f'    {k} : {v}')
 	pkg_logger.info('##-----------##')
 	
 	
-	arg_dict.pop('func')(dataset_holders, **arg_dict)
+	func(dataset_holders, **arg_dict)
 
 
 

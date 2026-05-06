@@ -4,41 +4,62 @@ Routines to help with numpy dtype objects
 
 
 import numpy as np
-from typing import Iterable, Self
+from typing import Iterable, Self, Type, Any
 
 
-def is_structured(dtype):
+def is_structured(dtype) -> bool:
+	"""
+	Returns True if `dtype` is structured, False otherwise
+	"""
 	return dtype.names is not None # recommended way to check if a dtype is a structured dtype
 
-def field_names(dtype):
+def field_names(dtype) -> tuple[str,...]:
+	"""
+	Returns a tuple of field names of a structured dtype
+	"""
 	x = dtype.names
 	if x is None:
 		raise RuntimeError(f'{dtype=} is not a structured dtype and therefore has no field names')
 	return x
 
-def field_dtypes(dtype):
+def field_dtypes(dtype) -> tuple[np.dtype,...]:
+	"""
+	Returns the np.dtype instances of the fields of a structured dtype
+	"""
 	x = dtype.fields
 	if x is None:
 		raise RuntimeError(f'{dtype} is not a structured dtype and therefore has no fields')
 	return tuple(y[0] for y in x.values())
 
-def field_offsets(dtype):
+def field_offsets(dtype) -> tuple[int,...]:
+	"""
+	Returns the offsets of the fields of a structured dtype
+	"""
 	x = dtype.fields
 	if x is None:
 		raise RuntimeError(f'{dtype} is not a structured dtype and therefore has no fields')
 	return tuple(y[1] for y in x.values())
 
-def field_types(dtype):
+def field_types(dtype) -> tuple[Type]:
+	"""
+	Returns the types of the fields of a structured dtype
+	"""
 	return tuple(x.type for x in field_dtypes(dtype))
 
-def structured_data_tuple_from(dtype, an_iterable : Iterable):
+def field_type_strings(dtype) -> tuple[Type]:
+	"""
+	Returns the numpy string representation of the types of the fields of a structured dtype
+	"""
+	return tuple(x.str for x in field_dtypes(dtype))
+
+def structured_data_tuple_from(dtype, an_iterable : Iterable) -> tuple[Any,...]:
 	#return tuple(t(x) for t,x in zip(field_types(dtype), an_iterable))
 	return tuple(d.type(x) if not is_structured(d) else structured_data_tuple_from(d, x) for d,x in zip(field_dtypes(dtype), an_iterable))
 
-def structured_data_from(dtype, an_iterable : Iterable):
+def structured_data_from(dtype, an_iterable : Iterable) -> np.void:
 	return np.void(structured_data_tuple_from(dtype, an_iterable), dtype=dtype)
 
-def to_string(dtype):
+def to_string(dtype) -> str:
 	s = []
 	if is_structured(dtype):
 		s.append('STRUCTURED{')
@@ -73,7 +94,7 @@ class StringParser:
 		self.exhausted = False
 		return self
 		
-	def next_token(self, s):
+	def next_token(self, s) -> str:
 		idx = s.find(self.TOK_SEP, self.pos, self.end)
 		
 		if idx > 0:
@@ -89,10 +110,13 @@ class StringParser:
 		
 		return self.current_token
 	
-	def is_exhausted(self, s):
+	def is_exhausted(self, s) -> bool:
 		return self.exhausted
 	
-	def parse_structured(self, s):
+	def parse_structured(self, s : str) -> np.dtype:
+		"""
+		Parse a string for a structured dtype
+		"""
 		fnames = []
 		foffsets = []
 		fdtypes = []
@@ -114,7 +138,10 @@ class StringParser:
 		assert self.current_token == '}', f'Expected token "}}", but got token "{tok}"'
 		return result
 	
-	def parse_array(self, s):
+	def parse_array(self, s : str) -> np.dtype:
+		"""
+		Parse a string for an array dtype
+		"""
 		
 		tok = self.next_token(s)
 		#print(f'210 :: {tok}')
@@ -129,7 +156,10 @@ class StringParser:
 		assert tok == '}', f'Expected token "}}", but got token "{tok}"'
 		return result
 	
-	def parse_type(self, s):
+	def parse_type(self, s : str) -> np.dtype:
+		"""
+		Parse a string for a simple dtype
+		"""
 		tok = self.next_token(s)
 		#print(f'310 :: {tok}')
 		result = np.dtype(tok)
@@ -139,7 +169,10 @@ class StringParser:
 		assert tok == '}', f'Expected token "}}", but got token "{tok}"'
 		return result
 	
-	def parse(self, s):
+	def parse(self, s : str) -> np.dtype:
+		"""
+		Parse a string that specifies a general dtype
+		"""
 		tok = self.next_token(s)
 		
 		result = None

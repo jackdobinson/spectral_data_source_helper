@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
+CHUNK_SIZE = 8196
 
 REPO_ROOT = Path(__file__).parent.parent
 REPO_LOCAL = REPO_ROOT / "LOCAL"
@@ -80,3 +81,5 @@ STANDARD_ISOTOPE_ALIASES = {
 	'D' : '2H',
 	'O' : '16O',
 }
+
+TRANS_STR_FLOAT32_FACTOR = 1E20

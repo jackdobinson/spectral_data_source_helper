@@ -98,17 +98,20 @@ class ExomolStatesInfo:
 	def __post_init__(self):
 		self.states_file_fields = tuple(ExomolStateField(**x) for x in self.states_file_fields)
 	
-	def get_states_field_dtype(self):
+	def get_states_field_dtype(self) -> np.dtype:
 		dtype = []
 		for esf in self.states_file_fields:
-			dtype.append((
-				esf.name,
-				cfmt.str_to_type(esf.cfmt)
-			))
+			dtype.append(
+				(
+					esf.name,
+					cfmt.str_to_type(esf.cfmt)
+				)
+			)
 		_lgr.debug(f'{dtype=}')
+		#print(f'{dtype=}')
 		return np.dtype(dtype)
 		
-	def get_states_field_widths(self):
+	def get_states_field_widths(self) -> list[int,...]:
 		widths = []
 		for esf in self.states_file_fields:
 			widths.append((
