@@ -8,6 +8,7 @@ import numpy as np
 import exomol_helper.utils.dtype
 
 from .module_var import ModuleVar
+from .binary_reader import BinaryReader
 
 HDR_MAX_SIZE = 1024 * 1024
 NULL_BYTE =  b'\0'[0]
@@ -27,8 +28,11 @@ class StructuredArrayFile:
 	def __init__(
 			self, 
 			fpath, mode : None | Literal['wb', 'rb'] = None,
+			reader : None | BinaryReader = None,
 	):
 		self.fpath = fpath
+		self.reader = reader
+		
 		self.mode = None
 		self.fhdl = None
 		self.header_written = None
@@ -57,16 +61,16 @@ class StructuredArrayFile:
 		
 		self.mode = mode
 		
+
+		self.fhdl = open(self.fpath, self.mode)
+		
 		if self.mode in self.class_readable_modes:
 			self.n_records_read = 0
+			if self.reader is not None:
+				self.reader.set_source(self.fhdl)
 		
 		if self.mode in self.class_writable_modes:
 			self.n_records_written = 0
-		
-		if self.fpath.suffix == '.bz2':
-			self.fhdl = bz2.open(self.fpath, self.mode)
-		else:
-			self.fhdl = open(self.fpath, self.mode)
 		
 		self.header_byte_end = 0
 		self.header_written = False
@@ -104,13 +108,18 @@ class StructuredArrayFile:
 		
 		return
 	
+	def read_bytes(self, n : int = -1):
+		if self.reader is None:
+			return self.fhdl.read(n if n >=0 else -1)
+		else:
+			return self.reader.read(n if n >=0 else -1)
 	
 	def read_header(self, encoding : str = 'ascii'):
-		#print('reading dtype', flush=True)
+		#print(f'reading dtype {self.fhdl.name=}', flush=True)
 		# Read 4 bytes at a time until string ends with null character
-		hdr_part = self.fhdl.read(4)
+		hdr_part = self.read_bytes(4)
 		while hdr_part[-1] != NULL_BYTE and len(hdr_part) <= HDR_MAX_SIZE:
-			hdr_part += self.fhdl.read(4)
+			hdr_part += self.read_bytes(4)
 		
 		if len(hdr_part) > HDR_MAX_SIZE:
 			raise RuntimeError(f'Header exceeded maximum size ({HDR_MAX_SIZE} bytes). First 128 bytes: {hdr_part[:128]}')
@@ -123,9 +132,16 @@ class StructuredArrayFile:
 	
 	def read(self, count : int = -1) -> np.ndarray:	
 		if self.arr_dtype is None:
-			self.arr_dtype = exomol_helper.utils.dtype.from_string(self.read_header())
-		
-		result = np.fromfile(self.fhdl, dtype=self.arr_dtype, count=count)
+			head = self.read_header()
+			#print(f'{head=}')
+			self.arr_dtype = exomol_helper.utils.dtype.from_string(head)
+
+		result = np.frombuffer(
+			self.read_bytes(count*self.arr_dtype.itemsize), 
+			dtype=self.arr_dtype, 
+			count=-1
+		)
+
 		self.n_records_read += result.size
 		
 		return result

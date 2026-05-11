@@ -210,13 +210,14 @@ load()
 add('m0', tuple()) # m0 seems to be the same as 'a0' but used in air broadening files
 add('a0', tuple())
 
+"""
 print(f'{qn_set=}')
 print(f'{qn_set_id_map=}')
 print(f'{qn_id_map=}')
 print(f'{qn_set_ids=}')
 print(f'{qn_set_id_array=}')
 print(f'{qn_set_n_id_array=}')
-
+"""
 
 
 

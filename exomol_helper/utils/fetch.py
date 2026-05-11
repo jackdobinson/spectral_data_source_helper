@@ -163,9 +163,8 @@ class ChunkedFileDownloader:
 			
 			
 			#if PROGRESS_INTERVAL_MEM_UNIT is not None and ((self.accumulated_size - last_reported_size) >= (PROGRESS_INTERVAL_MEM_UNIT*MEM_UNIT_BYTES)):
-			if progress_lgr.is_ready():
-				progress_lgr.info(f'Fetching chunk {i}. Chunk is {size_of_current_chunk/MEM_UNIT_BYTES:8.2f} {MEM_UNIT_NAME}. Fetched {self.accumulated_size/MEM_UNIT_BYTES:8.2f} {MEM_UNIT_NAME} so far...')
-				#last_reported_size = self.accumulated_size
+			progress_lgr.info(f'Fetching chunk {i}. Chunk is {size_of_current_chunk/MEM_UNIT_BYTES:8.2f} {MEM_UNIT_NAME}. Fetched {self.accumulated_size/MEM_UNIT_BYTES:8.2f} {MEM_UNIT_NAME} so far...')
+			#last_reported_size = self.accumulated_size
 			
 			self.accumulated_size += size_of_current_chunk
 			self.status.set('paused')

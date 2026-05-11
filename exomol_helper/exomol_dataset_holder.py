@@ -229,9 +229,11 @@ class ExomolDatasetHolder:
 	@property
 	def trans_n_cols(self) -> int:
 		if self._trans_n_cols is None:
+			#print('### GETTING TRANS N COLS ### ')
 			for n_bytes, aline in read.iter_line_records([fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=EXOMOL_CACHE,return_fpath=True)]):
 				self._trans_n_cols = len(aline.split())
 				break
+			#print(f'### GOT TRANS N COLS {self._trans_n_cols=} ### ')
 		return self._trans_n_cols
 	
 	@property
@@ -453,7 +455,6 @@ class ExomolDatasetHolder:
 		broad_array = broad_array.view(BYTES_DTYPE).reshape(-1,broad_array.dtype.itemsize//BYTES_DTYPE.itemsize)
 		
 		return broad_array_gas_slices, broad_array, broad_comp_mask, broad_values
-		
 	
 	@property
 	def broad_map(self) -> dict[str,dict[str,dict[tuple[Any,...],tuple[float,float]]]]:
@@ -607,7 +608,7 @@ class ExomolDatasetHolder:
 		if fpath.suffix == '.bz2':
 			trans_fpath = fpath
 		else:
-			trans_fpath = fpath.withn_name(fpath.name+'.bz2')
+			trans_fpath = fpath.with_name(fpath.name+'.bz2')
 		
 		# Paths at the top will be chosen first
 		possible_fpaths = (
@@ -615,6 +616,9 @@ class ExomolDatasetHolder:
 			trans_fpath.with_suffix('.bin'),
 			trans_fpath.with_suffix('.npy'),
 			trans_fpath.with_suffix('.npz'),
+			trans_fpath.with_suffix('.bin32.xz'), # faster and more space efficient than `.bz2`
+			trans_fpath.with_suffix('.bin32.bz2'),
+			trans_fpath.with_suffix('.bin.bz2'),
 			trans_fpath.with_suffix(''),
 			trans_fpath.with_suffix('.bz2'),
 		)
@@ -649,7 +653,7 @@ class ExomolDatasetHolder:
 				chunk_size=chunk_size,
 				yield_fpath = True,
 		):
-			if fpath.suffix == '.bin32':
+			if fpath.name.endswith('.bin32') or fpath.name.endswith('.bin32.bz2'):
 				chunk['einstein_A'] /= TRANS_STR_FLOAT32_FACTOR
 			yield chunk
 		
@@ -1102,9 +1106,9 @@ class ExomolDatasetHolder:
 				out = boltz_pop_ratio_part
 			)
 			
-			exomol_helper.calc.numba.spec.line_strength_at_temp(
-				Q_ratio,
+			exomol_helper.calc.numba.spec.line_strength_from_temp_ratios(
 				line_data_chunk['spec_line_intensity'],
+				Q_ratio,
 				stimulated_emission_ratio_part,
 				boltz_pop_ratio_part,
 				out = line_strengths_at_temp_part
