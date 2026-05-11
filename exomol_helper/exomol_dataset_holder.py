@@ -236,7 +236,7 @@ class ExomolDatasetHolder:
 			#print(f'{trans_fpath=}')
 			
 			if trans_fpath.name.endswith('.trans') or trans_fpath.name.endswith('.trans.bz2'):
-				for n_bytes, aline in read.iter_line_records([fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=EXOMOL_CACHE,return_fpath=True)]):
+				for n_bytes, aline in read.iter_line_records(trans_fpath):
 					self._trans_n_cols = len(aline.split())
 					break
 			elif ('.trans.bin' in trans_fpath.name):
