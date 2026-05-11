@@ -129,12 +129,12 @@ class StructuredArrayFile:
 		self.header_byte_end = len(hdr_part)+1
 		return hdr_part.decode(encoding)
 	
+	def read_dtype(self, encoding : str = 'ascii'):
+		return exomol_helper.utils.dtype.from_string(self.read_header(encoding=encoding))
 	
 	def read(self, count : int = -1) -> np.ndarray:	
 		if self.arr_dtype is None:
-			head = self.read_header()
-			#print(f'{head=}')
-			self.arr_dtype = exomol_helper.utils.dtype.from_string(head)
+			self.arr_dtype = self.read_dtype()
 
 		result = np.frombuffer(
 			self.read_bytes(count*self.arr_dtype.itemsize), 

@@ -230,10 +230,24 @@ class ExomolDatasetHolder:
 	def trans_n_cols(self) -> int:
 		if self._trans_n_cols is None:
 			#print('### GETTING TRANS N COLS ### ')
-			for n_bytes, aline in read.iter_line_records([fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=EXOMOL_CACHE,return_fpath=True)]):
-				self._trans_n_cols = len(aline.split())
-				break
+
+			trans_fpath = self.trans_file_precidence(fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=EXOMOL_CACHE,return_fpath=True))
+			
+			#print(f'{trans_fpath=}')
+			
+			if trans_fpath.name.endswith('.trans') or trans_fpath.name.endswith('.trans.bz2'):
+				for n_bytes, aline in read.iter_line_records([fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=EXOMOL_CACHE,return_fpath=True)]):
+					self._trans_n_cols = len(aline.split())
+					break
+			elif ('.trans.bin' in trans_fpath.name):
+				self._trans_n_cols = len(exomol_helper.utils.read.bin_file_dtype(trans_fpath).names)
+			else:
+				raise RuntimeError(f"Could not read transitio file {trans_fpath} to get number of columns")
+			
 			#print(f'### GOT TRANS N COLS {self._trans_n_cols=} ### ')
+			
+			
+			
 		return self._trans_n_cols
 	
 	@property

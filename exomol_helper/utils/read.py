@@ -342,6 +342,19 @@ def load_line_records_into_structured_array_by_chunks(
 
 
 
+def bin_file_dtype(
+	fpath : Path,
+):
+	if fpath.suffix in ('.bz2',):
+		reader = BinaryReader(decompressor=bz2.BZ2Decompressor())
+	elif fpath.suffix in ('.xz',):
+		reader = BinaryReader(decompressor=lzma.LZMADecompressor())
+	else:
+		reader = None
+	with exomol_helper.utils.structured_array.StructuredArrayFile(fpath, 'rb',reader=reader) as f:
+		return f.read_dtype()
+
+
 def bin_file_into_structured_array_chunks(
 	fpath : Path,
 	chunk_size : int = 1_000_000,
