@@ -1,28 +1,12 @@
 
 import sys
 import argparse as ap
-from typing import Any, Literal
+from typing import Literal
 from pathlib import Path
 import datetime as dt
+import logging
 
 import numpy as np
-
-from spectral_data_source_helper.cfg.const import (
-	CHUNK_SIZE,
-	REPO_LOCAL,
-	T_ref,
-	P_ref,
-)
-
-from spectral_data_source_helper.datatypes import (
-	ExomolDatasetInfo,
-)
-
-from spectral_data_source_helper.exomol_dataset_holder import ExomolDatasetHolder
-
-from spectral_data_source_helper.exomol import (
-	exomol_all_dataset_name_dict,
-)
 
 import spectral_data_source_helper.utils
 import spectral_data_source_helper.utils.dtype
@@ -31,79 +15,21 @@ import spectral_data_source_helper.utils.structured_array
 import spectral_data_source_helper.calc.pseudo_continuum
 import spectral_data_source_helper.calc.spec
 
-import logging
 from spectral_data_source_helper.cfg.log import pkg_logger, progress_lgr
+from spectral_data_source_helper.cfg.const import (
+	CHUNK_SIZE,
+	REPO_LOCAL,
+	T_ref,
+	P_ref,
+)
+
+from .exomol_dataset_holder import ExomolDatasetHolder
+from .args.dataset_selector import DatasetSelector, select_datasets
 
 
-mol_iso_dataset_dict = exomol_all_dataset_name_dict()
-
-all_molecules = tuple(sorted(mol_iso_dataset_dict.keys()))
-
-all_isotopes = []
-for mol, isos in mol_iso_dataset_dict.items():
-	all_isotopes.extend(isos.keys())
-all_isotopes = tuple(all_isotopes)
-
-all_dataset_names = []
-for mol, isos in mol_iso_dataset_dict.items():
-	for ds_info in isos.values():
-		all_dataset_names.extend(ds_info.dataset_names)
-all_dataset_names = tuple(all_dataset_names)
 
 
-def exomol_select_datasets(
-		molecules : None | list[str], 
-		isotopes : None | list[str], 
-		dataset_names : None | list[str],
-) -> tuple[Any]:
-	
-	dataset_selectors = []
-	
-	mols = sorted(molecules.pop(molecules.index(a_mol)) for a_mol in mol_iso_dataset_dict.keys() if a_mol in molecules)
-	
-	
-	for mol in mols:
-		#print(f'{mol=}')
-		
-		#print(f'{isotopes=}')
-		# want the isotopes for this molecule only
-		isos = sorted(isotopes.pop(isotopes.index(a_iso)) for a_iso in mol_iso_dataset_dict[mol].keys() if a_iso in isotopes)
-			
-		for iso in isos:
-			# want the dataset names for this isotope only
-			
-			ds_names = sorted(dataset_names.pop(dataset_names.index(a_ds_name)) for a_ds_name in mol_iso_dataset_dict[mol][iso].dataset_names if a_ds_name in dataset_names)
-			
-			for dataset_name in ds_names:
-				dataset_selectors.append(
-					ExomolDatasetInfo(
-						mol,
-						iso,
-						mol_iso_dataset_dict[mol][iso].iso_slug,
-						dataset_name
-					)
-				)
-	
-	err_msg = []
-	if len(molecules) > 0:
-		err_msg.append(f'Specified unknown {molecules=}')
-	
-	if len(isotopes) > 0:
-		err_msg.append(f'Specified unknown {isotopes=}')
-	
-	if len(dataset_names) > 0:
-		err_msg.append(f'Specified unkown {dataset_names=}')
-	
-	if len(dataset_selectors) == 0:
-		err_msg.append('No datasets were selected with passed molecules, isotopes, and dataset names.')
-	
-	if len(err_msg) > 0:
-		raise RuntimeError(' '.join(err_msg))
-	
-	return sorted(dataset_selectors)
-
-
-def exomol_download(
+def action_download(
 		dataset_holders : list[ExomolDatasetHolder],
 		refresh : bool
 ):
@@ -119,7 +45,7 @@ def exomol_download(
 		print(f'Dataset {i} downloaded.')
 
 
-def exomol_list(
+def action_list(
 		dataset_holders : list[ExomolDatasetHolder],
 ):
 	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
@@ -128,7 +54,7 @@ def exomol_list(
 		print(f'  {ds_holder.short_info_str}')
 
 
-def exomol_tree(
+def action_tree(
 		dataset_holders : list[ExomolDatasetHolder],
 		indent_0 : str = ' |  ',
 		indent_1 : str = ' |- ',
@@ -156,7 +82,7 @@ def exomol_tree(
 	print('#------------------------------------------#')
 
 
-def exomol_states(
+def action_states(
 		dataset_holders : list[ExomolDatasetHolder],
 		start : int = 0,
 		stop : int = 10,
@@ -187,7 +113,7 @@ def exomol_states(
 			print(f'        {state}')
 
 
-def exomol_trans(
+def action_trans(
 		dataset_holders : list[ExomolDatasetHolder],
 		n_to_print : int = 10,
 		chunk_size : int = CHUNK_SIZE,
@@ -266,7 +192,7 @@ def exomol_trans(
 				break
 
 
-def exomol_calc_line_data(
+def action_calc_line_data(
 		dataset_holders : list[ExomolDatasetHolder],
 		chunk_size : int = 1_000_000,
 ):
@@ -282,7 +208,7 @@ def exomol_calc_line_data(
 				line_data_chunk.tofile(f)
 
 
-def exomol_read_line_data(
+def action_read_line_data(
 		dataset_holders : list[ExomolDatasetHolder],
 		start : int = 0,
 		stop : int = 10,
@@ -335,9 +261,7 @@ def exomol_read_line_data(
 			print(f'        {line_data_record}')
 
 
-
-
-def exomol_calc_continuum(
+def action_calc_continuum(
 		dataset_holders : list[ExomolDatasetHolder],
 		temperature : list[float] = (T_ref,),
 		continuum_line_intensity_cutoff : float = 1E-24,
@@ -433,8 +357,7 @@ def exomol_calc_continuum(
 				fhdl.close()
 
 
-
-def exomol_read_continuum_data(
+def action_read_continuum(
 		dataset_holders : list[ExomolDatasetHolder],
 		fname : None | str = None,
 		start : int = 0,
@@ -473,7 +396,7 @@ def exomol_read_continuum_data(
 		continuum_bin_fpath = fpath.parent / f'{fpath_name}.contbins'
 		
 		line_data = None
-		
+		print(f'    Looking in following directory "{fpath.parent}"')
 		print('    Found the following files:')
 		if line_data_fpath.exists():
 			print(f'        line data : {line_data_fpath}')
@@ -571,7 +494,7 @@ def exomol_read_continuum_data(
 		else:
 		
 			import matplotlib.pyplot as plt
-			from .plotters.continuum_plotter import ContinuumPlotter
+			from spectral_data_source_helper.plotters.continuum_plotter import ContinuumPlotter
 			
 			print('    Plotting data...', flush=True)
 			
@@ -640,9 +563,9 @@ def exomol_read_continuum_data(
 			
 			plt.show()
 			print('    Data plotted', flush=True)
-		
 
-def exomol_convert_trans(
+
+def action_convert_trans(
 		dataset_holders : list[ExomolDatasetHolder],
 		fmt : str,
 		chunk_size : int = CHUNK_SIZE,
@@ -656,52 +579,10 @@ def exomol_convert_trans(
 			trans_files_slice=slice(None,n_files),
 		)
 
+
 if __name__=='__main__':
 	
-	def DatasetSelector(dss : str):
-		#print(f'{dss=}')
-		result = []
-		
-		if (n_slash := dss.count('/')) < 2:
-			dss += '/*'*(2-n_slash)
-		dss_mol, dss_iso, dss_name = dss.split('/')[:3]
-		
-		if dss_mol == '*':
-			mols = list(all_molecules)
-		else:
-			mols = dss_mol.split(',')
-			valid = tuple(mol_iso_dataset_dict.keys())
-			invalid = [x for x in mols if x not in valid]
-			if len(invalid) > 0:
-				raise ap.ArgumentTypeError(f'Invalid molecules {invalid}. Valid choices are {valid}')
-		
-		for mol in mols:
-			if dss_iso == '*':
-				isos = list(mol_iso_dataset_dict[mol].keys())
-			else:
-				isos = dss_iso.split(',')
-				valid = tuple(mol_iso_dataset_dict[mol].keys())
-				invalid = [x for x in isos if x not in valid]
-				if len(invalid) > 0:
-					raise ap.ArgumentTypeError(f'Invalid isotopes {invalid} for molecule {mol}. Valid choices are {valid}')
-				#isos = [iso for iso in isos if iso in tuple(mol_iso_dataset_dict[mol].keys())]
-			
-			for iso in isos:
-			
-				if dss_name == '*':
-					names = list(mol_iso_dataset_dict[mol][iso].dataset_names)
-				else:
-					names = dss_name.split(',')
-					valid = tuple(mol_iso_dataset_dict[mol][iso].dataset_names)
-					invalid = [x for x in names if x not in valid]
-					if len(invalid) > 0:
-						raise ap.ArgumentTypeError(f'Invalid dataset names {invalid} for isotope {iso} and molecule {mol}. Valid choices are {valid}')
-					#names = [name for name in names if name in mol_iso_dataset_dict[mol][iso].dataset_names]
-				
-				for name in names:
-					result.append((mol, iso, name))
-		
-		return result
+	
 
 
 
@@ -713,38 +594,38 @@ if __name__=='__main__':
 	subparsers = parser.add_subparsers(required=True)
 	
 	download_parser = subparsers.add_parser('download', help='Download the passed molecule and isotopes')
-	download_parser.set_defaults(func = exomol_download)
+	download_parser.set_defaults(func = action_download)
 	download_parser.add_argument('--refresh', action='store_true', help='If present, will redownload all specified data.')
 	
 	list_parser = subparsers.add_parser('tree', help='Show molecules, isotopes, and datasets selected by the passed arguments in a tree format')
-	list_parser.set_defaults(func = exomol_tree)
+	list_parser.set_defaults(func = action_tree)
 	
 	list_parser = subparsers.add_parser('list', help='List set of molecules, isotopes, and datasets that are selected by the passed arguments')
-	list_parser.set_defaults(func = exomol_list)
+	list_parser.set_defaults(func = action_list)
 	
 	states_parser = subparsers.add_parser('states', help='Show information about states of specified data')
-	states_parser.set_defaults(func = exomol_states)
+	states_parser.set_defaults(func = action_states)
 	states_parser.add_argument('-n', '--start', type=int, help='start of slice to print', default=0)
 	states_parser.add_argument('-m', '--stop', type=int, help='stop of slice to print (0 is "past the end", so selects all until end) endpoint is inclusive', default=10)
 	states_parser.add_argument('-l', '--step', type=int, help='step of slice to print', default=1)
 	
 	trans_parser = subparsers.add_parser('trans', help='Show information about transitions of specified data')
-	trans_parser.set_defaults(func = exomol_trans)
+	trans_parser.set_defaults(func = action_trans)
 	trans_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
 	trans_parser.add_argument('-n', '--n_to_print', type=int, help='number of lines of data to print', default=10)
 	
 	calc_line_data_parser = subparsers.add_parser('calc_line_data', help='calculate line data')
-	calc_line_data_parser.set_defaults(func = exomol_calc_line_data)
+	calc_line_data_parser.set_defaults(func = action_calc_line_data)
 	calc_line_data_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
 	
 	read_line_data_parser = subparsers.add_parser('read_line_data', help='read saved line data files')
-	read_line_data_parser.set_defaults(func = exomol_read_line_data)
+	read_line_data_parser.set_defaults(func = action_read_line_data)
 	read_line_data_parser.add_argument('-n', '--start', type=int, help='start of slice to print', default=0)
 	read_line_data_parser.add_argument('-m', '--stop', type=int, help='stop of slice to print (0 is "past the end", so selects all until end) endpoint is inclusive', default=10)
 	read_line_data_parser.add_argument('-l', '--step', type=int, help='step of slice to print', default=1)
 	
-	calc_continuum_parser = subparsers.add_parser('calc_continuum', help='read saved line data files')
-	calc_continuum_parser.set_defaults(func = exomol_calc_continuum)
+	calc_continuum_parser = subparsers.add_parser('calc_continuum', help='calculate continuum data')
+	calc_continuum_parser.set_defaults(func = action_calc_continuum)
 	calc_continuum_parser.add_argument('-T', '--temperature', type=float, action='extend', nargs='+', help='Temperatures to calculate continuum at', default=None)
 	calc_continuum_parser.add_argument('-x', '--continuum_line_intensity_cutoff', type=float, help='Below this value a line is considered "weak" and is added to the continuum', default=1E-24)
 	calc_continuum_parser.add_argument('-a', '--continuum_wavenumber_min', type=float, help='Minimum wavenumber of continuum', default=0.00001)
@@ -753,19 +634,19 @@ if __name__=='__main__':
 	calc_continuum_parser.add_argument('-s', '--continuum_bin_spacing', type=str, choices=('lin', 'log'), help='Spacing of continuum bins', default='lin')
 	calc_continuum_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
 	
-	read_continuum_data_parser = subparsers.add_parser('read_continuum_data', help='read saved line data files')
-	read_continuum_data_parser.set_defaults(func = exomol_read_continuum_data)
-	read_continuum_data_parser.add_argument('fname', type=str, help='Name of the files to use (will add ".continuum", ".contbins", ".stronglines" if name does not end with one of them otherwise will replace extension to get the other required files)')
-	read_continuum_data_parser.add_argument('-n', '--start', type=int, help='start of slice to print', default=0)
-	read_continuum_data_parser.add_argument('-m', '--stop', type=int, help='stop of slice to print (0 is "past the end", so selects all until end) endpoint is inclusive', default=10)
-	read_continuum_data_parser.add_argument('-l', '--step', type=int, help='step of slice to print', default=1)
-	read_continuum_data_parser.add_argument('-t', '--temp', type=float, help='Temperature to calculate pseudo-continuum at', default=None)
-	read_continuum_data_parser.add_argument('-e', '--eps', type=float, help='If present, line strength sums with a magnitude smaller than this are treated as a truncation error, and -ve values with a larger magnitude are treated as a problem. Otherwise any -ve line strength sums are treated as errors.', default=None)
-	read_continuum_data_parser.add_argument('-p', '--extra_plots', action='count', help='Will show extra plots depending upon the number of times passed', default=0)
+	read_continuum_parser = subparsers.add_parser('read_continuum', help='read saved continuum data files')
+	read_continuum_parser.set_defaults(func = action_read_continuum)
+	read_continuum_parser.add_argument('fname', type=str, help='Name of the files to use (will add ".continuum", ".contbins", ".stronglines" if name does not end with one of them otherwise will replace extension to get the other required files)')
+	read_continuum_parser.add_argument('-n', '--start', type=int, help='start of slice to print', default=0)
+	read_continuum_parser.add_argument('-m', '--stop', type=int, help='stop of slice to print (0 is "past the end", so selects all until end) endpoint is inclusive', default=10)
+	read_continuum_parser.add_argument('-l', '--step', type=int, help='step of slice to print', default=1)
+	read_continuum_parser.add_argument('-t', '--temp', type=float, help='Temperature to calculate pseudo-continuum at', default=None)
+	read_continuum_parser.add_argument('-e', '--eps', type=float, help='If present, line strength sums with a magnitude smaller than this are treated as a truncation error, and -ve values with a larger magnitude are treated as a problem. Otherwise any -ve line strength sums are treated as errors.', default=None)
+	read_continuum_parser.add_argument('-p', '--extra_plots', action='count', help='Will show extra plots depending upon the number of times passed', default=0)
 	
 	
 	convert_trans_parser = subparsers.add_parser('convert_trans', help='Convert transition data to new format')
-	convert_trans_parser.set_defaults(func = exomol_convert_trans)
+	convert_trans_parser.set_defaults(func = action_convert_trans)
 	convert_trans_parser.add_argument('-f', '--fmt', type=str, help='Format to convert transition files to', default='.bin')
 	convert_trans_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
 	convert_trans_parser.add_argument('-n', '--n_files', type=int, help='Number of files to convert (starting from the first available, default is to convert all)', default=None)
@@ -781,7 +662,7 @@ if __name__=='__main__':
 	dataset_holders = []
 	for dss_mol, dss_iso, dss_name in (dataset_selectors if dataset_selectors is not None else DatasetSelector('*')):
 		#print(f'{dss_mol=} {dss_iso=} {dss_name=}')
-		dataset_holders.extend([ExomolDatasetHolder(x) for x in exomol_select_datasets([dss_mol], [dss_iso], [dss_name])])
+		dataset_holders.extend([ExomolDatasetHolder(x) for x in select_datasets([dss_mol], [dss_iso], [dss_name])])
 		
 	# Deal with any arguments that should have default values but
 	# are not playing nice.

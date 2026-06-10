@@ -6,7 +6,7 @@ import datetime as dt
 
 from spectral_data_source_helper.utils import fetch
 from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
-from spectral_data_source_helper.cfg.cont import (
+from spectral_data_source_helper.cfg.const import (
 	PKG_CACHE,
 )
 
@@ -15,8 +15,8 @@ from .cfg.const import (
 	EXOMOL_API_URL_FMT,
 )
 
-#import qn_set_manager
-import broad_file_manager
+#from . import qn_set_manager
+from . import broad_file_manager
 
 from .datatypes import (
 	IsotopeInfo,

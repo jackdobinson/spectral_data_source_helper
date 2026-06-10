@@ -5,7 +5,7 @@ Broadening files seem to be scattered all over EXOMOL without any nice way of fi
 import spectral_data_source_helper.utils.fetch as fetch
 from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
 
-from spectral_data_source_helper.cfg.cont import (
+from spectral_data_source_helper.cfg.const import (
 	PKG_CACHE,
 )
 

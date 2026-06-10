@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-from spectral_data_source_helper.cfg.cont import (
+from spectral_data_source_helper.cfg.const import (
 	PKG_CACHE,
 )
 from spectral_data_source_helper.utils import fetch
@@ -13,8 +13,8 @@ from spectral_data_source_helper.utils import fetch
 from .readers import html_to_molecular_formula, html_to_isotopologue_formula, parse_html_float
 
 
-from ..datatypes.molecule import Molecule
-from ..datatypes.isotopologue import Isotopologue
+from spectral_data_source_helper.datatypes.molecule import Molecule
+from spectral_data_source_helper.datatypes.isotopologue import Isotopologue
 
 HITRAN_ISO_LIST_URL = "https://hitran.org/docs/iso-meta/"
 HITRAN_ISO_TABLE = PKG_CACHE / 'hitran.org' / 'isotopologues.tbl'

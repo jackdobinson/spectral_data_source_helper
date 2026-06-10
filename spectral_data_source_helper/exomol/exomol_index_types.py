@@ -12,12 +12,11 @@ import bz2
 
 import numpy as np
 
-import qn_set_manager
 #import broad_file_manager
 import spectral_data_source_helper.utils.fetch as fetch
 import spectral_data_source_helper.utils.cfmt as cfmt
 from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
-from spectral_data_source_helper.cfg.cont import (
+from spectral_data_source_helper.cfg.const import (
 	PKG_CACHE,
 )
 from .cfg.const import (
@@ -29,6 +28,7 @@ from .cfg.const import (
 	EXOMOL_API_INTERNAL_URL_START,
 )
 
+from . import qn_set_manager
 
 
 class ExomolIsotopeDefNotFoundError(Exception):

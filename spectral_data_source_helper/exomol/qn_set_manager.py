@@ -4,7 +4,7 @@ Quantum number sets are scattered aroung EXOMOL. Therefore put them here as I en
 import pickle
 
 import numpy as np
-from spectral_data_source_helper.cfg.cont import (
+from spectral_data_source_helper.cfg.const import (
 	PKG_CACHE,
 )
 
