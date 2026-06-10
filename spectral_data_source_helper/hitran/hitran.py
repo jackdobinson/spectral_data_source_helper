@@ -9,12 +9,12 @@ import numpy as np
 from .html import isotopologue
 from .datatypes.hitran_isotope import HitranIsotope
 from .datatypes.partition_function import PartitionFunctionEntry
-import exomol_helper.utils.dtype
-import exomol_helper.utils.fetch
-import exomol_helper.utils.read
+import spectral_data_source_helper.utils.dtype
+import spectral_data_source_helper.utils.fetch
+import spectral_data_source_helper.utils.read
 
-from ..cfg.const import (
-	EXOMOL_CACHE,
+from spectral_data_source_helper.cfg.cont import (
+	PKG_CACHE,
 )
 
 import logging
@@ -138,7 +138,7 @@ class Hitran160Record(NamedTuple):
 		# Account for `iso_id` values greater than 9 when only have a single digit to use
 		mutator = lambda it: (x if i!=1 else HITRAN_ISO_ID_FROM_SINGLE_CHAR_MAP.get(x,x) for i,x in enumerate(it))
 		
-		return exomol_helper.utils.read.load_line_records_into_structured_array_by_chunks(
+		return spectral_data_source_helper.utils.read.load_line_records_into_structured_array_by_chunks(
 			fpath,
 			cls.dtype(),
 			widths=tuple(cls.widths().values()),
@@ -155,7 +155,7 @@ class Hitran160Record(NamedTuple):
 		# Account for `iso_id` values greater than 9 when only have a single digit to use
 		mutator = lambda it: (x if i!=1 else HITRAN_ISO_ID_FROM_SINGLE_CHAR_MAP.get(x,x) for i,x in enumerate(it))
 		
-		yield from exomol_helper.utils.read.iter_line_records_via_structured_array_chunk(
+		yield from spectral_data_source_helper.utils.read.iter_line_records_via_structured_array_chunk(
 			fpath,
 			cls.dtype(),
 			widths=tuple(cls.widths().values()),
@@ -179,9 +179,9 @@ class HitranDatasetHolder:
 	@property
 	def pf_data_file(self) -> Path:
 		if self._pf_data_file is None:
-			self._pf_data_file = exomol_helper.utils.fetch.file_from_cache(
+			self._pf_data_file = spectral_data_source_helper.utils.fetch.file_from_cache(
 				HITRAN_PF_URL_FMT.format(global_id=self.d.global_id),
-				cache = EXOMOL_CACHE,
+				cache = PKG_CACHE,
 				return_fpath=True,
 				#refresh=True,
 			)
@@ -205,9 +205,9 @@ class HitranDatasetHolder:
 				broad_url = HITRAN_API_URL_FMT.format(global_id=self.d.global_id, par_list=','.join(broad_pars))
 				
 				try:
-					bfp = exomol_helper.utils.fetch.file_from_cache(
+					bfp = spectral_data_source_helper.utils.fetch.file_from_cache(
 						broad_url,
-						cache = EXOMOL_CACHE,
+						cache = PKG_CACHE,
 						return_fpath=True,
 						not_found_in_cache_action='cache_empty',
 						error_code_action={
@@ -256,7 +256,7 @@ class HitranDatasetHolder:
 			for j, (broadener, broadener_file) in enumerate(self.broadener_files.items()):
 				_lgr.debug(f'Loading "{broadener}" [{j}/{len(self.broadener_files)}] [{100*j/len(self.broadener_files):6.2f} %] broadening data for {self.d.iso_formula=} {self.d.global_id=} from {broadener_file.name=}')
 				
-				broad_data = exomol_helper.utils.read.load_line_records_into_structured_array_by_chunks(
+				broad_data = spectral_data_source_helper.utils.read.load_line_records_into_structured_array_by_chunks(
 					broadener_file,
 					dtype=broad_dtypes[broadener],
 					delim=',',
@@ -273,9 +273,9 @@ class HitranDatasetHolder:
 		if self._linedata_file is None:
 			par_url = HITRAN_160_PAR_FILE_API_URL_FMT.format(global_id = self.d.global_id)
 			try:
-				self._linedata_file = exomol_helper.utils.fetch.file_from_cache(
+				self._linedata_file = spectral_data_source_helper.utils.fetch.file_from_cache(
 					par_url,
-					cache = EXOMOL_CACHE,
+					cache = PKG_CACHE,
 					return_fpath=True,
 					not_found_in_cache_action='cache_empty',
 					error_code_action={
@@ -315,7 +315,7 @@ class HitranDatasetHolder:
 		broad_file = self.broadener_files[broadener]
 		broad_dtype = self.broadener_dtypes[broadener]
 		
-		yield from exomol_helper.utils.read.iter_line_records_via_structured_array_chunk(
+		yield from spectral_data_source_helper.utils.read.iter_line_records_via_structured_array_chunk(
 			broad_file,
 			dtype=broad_dtype,
 			delim=',',

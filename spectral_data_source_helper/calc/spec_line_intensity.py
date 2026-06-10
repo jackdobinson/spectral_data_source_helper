@@ -5,12 +5,12 @@ Routines to calculate absorption coefficients
 
 import numpy as np
 
-from exomol_helper.cfg.const import (
+from spectral_data_source_helper.cfg.const import (
 	c_light_cgs,
 	c2_cgs,
 )
 
-#from exomol_helper.cfg.log import pkg_logger as _lgr
+#from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
 
 def exp_c2_Epp(
 		temp : np.ndarray,

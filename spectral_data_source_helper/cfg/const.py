@@ -1,7 +1,6 @@
 """
 Holds constants or extremely simple calculated data
 """
-
 import os
 from pathlib import Path
 
@@ -12,37 +11,11 @@ CHUNK_SIZE = 8196
 REPO_ROOT = Path(__file__).parent.parent
 REPO_LOCAL = REPO_ROOT / "LOCAL"
 
-EXOMOL_URL_PREFIX : str = "exomol.com/db"
-EXOMOL_DATABASE_URL : str = "https://www.exomol.com/db"
-EXOMOL_DATABASE_ROOT_URL : str = "https://www.exomol.com/db/exomol.all"
-EXOMOL_JSON_DATABASE_ROOT_URL : str = "https://www.exomol.com/db/exomol.all.json"
+PKG_CACHE = Path(os.path.expanduser("~/data/linedata_test_storage/cache"))
 
-EXOMOL_API_URL_FMT : str = "https://exomol.com/api/?molecule={}"
-
-EXOMOL_CACHE = Path(os.path.expanduser("~/data/linedata_test_storage/cache"))
-
-EXOMOL_API_EXTERNAL_URL_STARTS = (
-	'exomol.comhttp://',
-	'exomol.comhttps://',
-	'exomol.comftp://',
-)
-
-EXOMOL_API_INTERNAL_URL_START = 'exomol.com/db/'
-
-EXOMOL_STATE_FILE_ENDINGS = (
-	'.states',
-	'.states.bz2',
-)
-
-EXOMOL_TRANSITION_FILE_ENDINGS = (
-	'.trans',
-	'.trans.bz2',
-)
 
 T_ref                : float    = 296.0                                          # K                    Reference temperature (Kelvin)
 P_ref                : float    = 1.0                                            # bar                  Reference pressure (bar)
-EXOMOL_T_ref         : float    = 296.0                                          # K                    Reference temperature (Kelvin)
-EXOMOL_P_ref         : float    = 1.0                                            # bar                  Reference pressure (bar)
 
 k_B                  : float    = 1.380649E-23                                   # J K^{-1}             Boltzmann constant
 k_boltzmann          : float    = 1.380649E-23                                   # J K^{-1}             Boltzmann constant

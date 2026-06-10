@@ -8,8 +8,8 @@ import ssl
 from typing import Generator, Literal, Any
 import dataclasses as dc
 
-from exomol_helper.cfg.log import progress_lgr
-from exomol_helper.cfg.log import pkg_logger as _lgr
+from spectral_data_source_helper.cfg.log import progress_lgr
+from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
 
 
 WEB_PREFIXES = (

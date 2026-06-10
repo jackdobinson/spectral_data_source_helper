@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-import exomol_helper.utils.dtype
+import spectral_data_source_helper.utils.dtype
 
 from .module_var import ModuleVar
 from .binary_reader import BinaryReader
@@ -84,9 +84,9 @@ class StructuredArrayFile:
 	
 	def write_header(self, arr : np.ndarray | np.dtype, encoding : str = 'ascii'):
 		if isinstance(arr, np.dtype):
-			dtype_bytes = exomol_helper.utils.dtype.to_string(arr).encode(encoding)
+			dtype_bytes = spectral_data_source_helper.utils.dtype.to_string(arr).encode(encoding)
 		else:
-			dtype_bytes = exomol_helper.utils.dtype.to_string(arr.dtype).encode(encoding)
+			dtype_bytes = spectral_data_source_helper.utils.dtype.to_string(arr.dtype).encode(encoding)
 		
 		# align to 32 bit boundary, always end with atleast one null byte
 		dtype_bytes += b'\0'*(4 - (len(dtype_bytes) % 4))
@@ -129,7 +129,7 @@ class StructuredArrayFile:
 		return hdr_part.decode(encoding)
 	
 	def read_dtype(self, encoding : str = 'ascii'):
-		return exomol_helper.utils.dtype.from_string(self.read_header(encoding=encoding))
+		return spectral_data_source_helper.utils.dtype.from_string(self.read_header(encoding=encoding))
 	
 	def read(self, count : int = -1) -> np.ndarray:	
 		if self.arr_dtype is None:

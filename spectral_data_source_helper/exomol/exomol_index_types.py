@@ -12,22 +12,24 @@ import bz2
 
 import numpy as np
 
-import exomol_helper.qn_set_manager
-import exomol_helper.broad_file_manager
-import exomol_helper.utils.fetch as fetch
-import exomol_helper.utils.cfmt as cfmt
-
-from exomol_helper.cfg.const import (
+import qn_set_manager
+#import broad_file_manager
+import spectral_data_source_helper.utils.fetch as fetch
+import spectral_data_source_helper.utils.cfmt as cfmt
+from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
+from spectral_data_source_helper.cfg.cont import (
+	PKG_CACHE,
+)
+from .cfg.const import (
 	EXOMOL_URL_PREFIX,
 	EXOMOL_DATABASE_URL,
-	EXOMOL_CACHE,
 	EXOMOL_STATE_FILE_ENDINGS,
 	EXOMOL_TRANSITION_FILE_ENDINGS,
 	EXOMOL_API_URL_FMT,
 	EXOMOL_API_INTERNAL_URL_START,
 )
 
-from exomol_helper.cfg.log import pkg_logger as _lgr
+
 
 class ExomolIsotopeDefNotFoundError(Exception):
 	pass
@@ -172,7 +174,7 @@ class ExomolQuantumNumberSet:
 	def __post_init__(self):
 		self.quantum_numbers = tuple(self.quantum_numbers)
 		
-		exomol_helper.qn_set_manager.add(self.code, self.quantum_numbers)
+		qn_set_manager.add(self.code, self.quantum_numbers)
 
 @dc.dataclass
 class ExomolBroadener:
@@ -280,12 +282,12 @@ class ExomolLineList:
 			#print(f'Getting file {json_def_url}')
 			
 			try:
-				self.isotope_def = ExomolIsotopeDef(mol_formula=self.mol_formula, **json.loads(fetch.file_from_cache(json_def_url, cache=EXOMOL_CACHE)))
+				self.isotope_def = ExomolIsotopeDef(mol_formula=self.mol_formula, **json.loads(fetch.file_from_cache(json_def_url, cache=PKG_CACHE)))
 			except urllib.error.HTTPError as e:
 				print(f'Could not get "{json_def_url}". Error: {e}')
 				print('Attempting to get text version.')
 				try:
-					fetch.file_from_cache(def_url, cache=EXOMOL_CACHE)
+					fetch.file_from_cache(def_url, cache=PKG_CACHE)
 				except urllib.error.HTTPError as e1:
 					print(f'Could not get text definition file "{def_url}". Error: {e1}')
 				else:
@@ -305,7 +307,7 @@ class ExomolLineList:
 			_lgr.info(f'Fetching file {i}/{n_urls} "{url}"')
 			fpath = fetch.file_from_cache(
 				f'https://www.{url}',
-				cache = EXOMOL_CACHE,
+				cache = PKG_CACHE,
 				return_fpath = True,
 				refresh=refresh,
 				check_web_first=True
@@ -316,7 +318,7 @@ class ExomolLineList:
 		for state_file_url in self.state_file_urls:
 			fpath = fetch.file_from_cache(
 				f'https://www.{state_file_url}',
-				cache=EXOMOL_CACHE,
+				cache=PKG_CACHE,
 				return_fpath = True,
 				check_web_first=True
 			)
@@ -397,7 +399,7 @@ class ExomolLineList:
 		for trans_file_url in self.transition_file_urls:
 			fpath = fetch.file_from_cache(
 				f'https://www.{trans_file_url}',
-				cache=EXOMOL_CACHE,
+				cache=PKG_CACHE,
 				return_fpath = True,
 				check_web_first=True
 			)
@@ -442,7 +444,7 @@ class ExomolRoot:
 		
 		for mol_formula, exomol_molecule in self.molecules.items():
 			print(f'{mol_formula=}')
-			exomol_api_iso_json = json.loads(fetch.file_from_cache(EXOMOL_API_URL_FMT.format(mol_formula_to_api_mol(mol_formula)), cache=EXOMOL_CACHE))
+			exomol_api_iso_json = json.loads(fetch.file_from_cache(EXOMOL_API_URL_FMT.format(mol_formula_to_api_mol(mol_formula)), cache=PKG_CACHE))
 			
 			for iso_formula, json_iso_info in exomol_api_iso_json.items():
 				json_iso_linelists_dataset_names = tuple(x for x in json_iso_info['linelist'].keys() if exomol_json_iso_info_linelist_filter(json_iso_info['linelist'], x))
@@ -477,12 +479,12 @@ class ExomolRoot:
 						print(f'Adding ExomolLineList for "{json_def_file}" as it is not already present')
 						# Add ExomolLineList instances from DEF file
 						try:
-							isotope_def = ExomolIsotopeDef(mol_formula=mol_formula, **json.loads(fetch.file_from_cache(json_def_url, cache=EXOMOL_CACHE)))
+							isotope_def = ExomolIsotopeDef(mol_formula=mol_formula, **json.loads(fetch.file_from_cache(json_def_url, cache=PKG_CACHE)))
 						except urllib.error.HTTPError as e:
 							print(f'Could not get "{json_def_url}". Error: {e}')
 							print('Attempting to get text version.')
 							try:
-								fetch.file_from_cache(def_url, cache=EXOMOL_CACHE)
+								fetch.file_from_cache(def_url, cache=PKG_CACHE)
 							except urllib.error.HTTPError as e1:
 								print(f'Could not get text definition file "{def_url}". Error: {e1}')
 							else:

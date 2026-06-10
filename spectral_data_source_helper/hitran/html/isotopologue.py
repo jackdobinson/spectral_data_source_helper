@@ -5,19 +5,19 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-from ...utils import fetch
+from spectral_data_source_helper.cfg.cont import (
+	PKG_CACHE,
+)
+from spectral_data_source_helper.utils import fetch
 
 from .readers import html_to_molecular_formula, html_to_isotopologue_formula, parse_html_float
 
-from ...cfg.const import (
-	EXOMOL_CACHE,
-)
 
 from ..datatypes.molecule import Molecule
 from ..datatypes.isotopologue import Isotopologue
 
 HITRAN_ISO_LIST_URL = "https://hitran.org/docs/iso-meta/"
-HITRAN_ISO_TABLE = EXOMOL_CACHE / 'hitran.org' / 'isotopologues.tbl'
+HITRAN_ISO_TABLE = PKG_CACHE / 'hitran.org' / 'isotopologues.tbl'
 
 
 # https://hitran.org/lbl/api?iso_ids_list=13&numin=6300&numax=6400&head=False&fixwidth=0&sep=[comma]&request_params=par_line,n_self,delta_self
@@ -159,7 +159,7 @@ def read_iso_table(table):
 def download_hitran_isotope_data(refresh : bool = False):
 	
 	try:
-		iso_list_html = fetch.file_from_cache(HITRAN_ISO_LIST_URL, cache=EXOMOL_CACHE)
+		iso_list_html = fetch.file_from_cache(HITRAN_ISO_LIST_URL, cache=PKG_CACHE)
 	except Exception as e:
 		if not refresh and HITRAN_ISO_TABLE.exists():
 			return

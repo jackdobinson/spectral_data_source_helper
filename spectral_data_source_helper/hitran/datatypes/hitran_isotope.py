@@ -5,8 +5,8 @@ from typing import NamedTuple, Annotated, get_args
 import numpy as np
 
 
-import exomol_helper.utils.dtype 
-import exomol_helper.utils.read
+import spectral_data_source_helper.utils.dtype 
+import spectral_data_source_helper.utils.read
 
 MAX_STR_LEN = 32
 
@@ -36,7 +36,7 @@ class HitranIsotope(NamedTuple):
 		):
 		dtype = np.dtype([(name, get_args(anno)[0] if get_args(anno)[0] is not str else f'U{MAX_STR_LEN}') for name, anno in cls.__annotations__.items()])
 		
-		return exomol_helper.utils.read.load_line_records_into_structured_array_by_chunks(
+		return spectral_data_source_helper.utils.read.load_line_records_into_structured_array_by_chunks(
 			fpath,
 			dtype,
 			delim=None

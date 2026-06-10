@@ -3,8 +3,8 @@
 import numpy as np
 import numpy.lib.recfunctions
 
-import exomol_helper.calc.numba
-import exomol_helper.calc.numba.spec
+import spectral_data_source_helper.calc.numba
+import spectral_data_source_helper.calc.numba.spec
 
 def line_strengths(
 	line_data_chunk : np.ndarray, #[N_lines]
@@ -17,7 +17,7 @@ def line_strengths(
 	store = np.empty((3, line_data_chunk.shape[0],), dtype=float)
 	line_strengths = np.empty((T.shape[0], line_data_chunk.shape[0],), dtype=float)
 
-	exomol_helper.calc.numba.spec.line_strength_at_temp(
+	spectral_data_source_helper.calc.numba.spec.line_strength_at_temp(
 		line_data_chunk['spec_line_intensity'],
 		line_data_chunk['wavenumber'],
 		line_data_chunk['E"'],

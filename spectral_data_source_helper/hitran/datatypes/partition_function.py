@@ -7,7 +7,7 @@ from typing import NamedTuple, Annotated, get_args
 import numpy as np
 
 
-import exomol_helper.utils.dtype 
+import spectral_data_source_helper.utils.dtype 
 
 MAX_STR_LEN = 32
 
@@ -41,7 +41,7 @@ class PartitionFunctionEntry(NamedTuple):
 				#print(f'{x=} {n_chunks=}')
 				if len(x) == 0:
 					continue
-				arr[i - (chunk_size * n_chunks)] = exomol_helper.utils.dtype.structured_data_from(dtype, x)
+				arr[i - (chunk_size * n_chunks)] = spectral_data_source_helper.utils.dtype.structured_data_from(dtype, x)
 				
 				i += 1
 		

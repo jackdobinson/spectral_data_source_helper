@@ -11,10 +11,10 @@ import lzma
 
 import numpy as np
 
-from exomol_helper.cfg.log import progress_lgr
-from exomol_helper.cfg.log import pkg_logger as _lgr
-import exomol_helper.utils.dtype
-import exomol_helper.utils.structured_array
+from spectral_data_source_helper.cfg.log import progress_lgr
+from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
+import spectral_data_source_helper.utils.dtype
+import spectral_data_source_helper.utils.structured_array
 
 from .module_var import ModuleVar
 from .binary_reader import DecompressorProtocol, BinaryReader
@@ -219,7 +219,7 @@ def iter_line_records_via_structured_array_chunk_simple(
 			bytes_in_chunk = 0
 		
 		try:
-			chunk[i-nn] = exomol_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
+			chunk[i-nn] = spectral_data_source_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
 		except:
 			_lgr.error(f'{i=} {x[:80]=}')
 			raise
@@ -291,7 +291,7 @@ def iter_line_records_via_structured_array_chunk(
 			ss = mutator(ss)
 		
 		try:
-			chunk[i-nn] = exomol_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
+			chunk[i-nn] = spectral_data_source_helper.utils.dtype.structured_data_tuple_from(dtype, ss)
 		except:
 			_lgr.error(f'{i=} {x[:80]=}')
 			raise
@@ -351,7 +351,7 @@ def bin_file_dtype(
 		reader = BinaryReader(decompressor=lzma.LZMADecompressor())
 	else:
 		reader = None
-	with exomol_helper.utils.structured_array.StructuredArrayFile(fpath, 'rb',reader=reader) as f:
+	with spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath, 'rb',reader=reader) as f:
 		return f.read_dtype()
 
 
@@ -372,7 +372,7 @@ def bin_file_into_structured_array_chunks(
 
 	n_bytes_read = 0
 	prev_n_bytes_read = 0
-	f = exomol_helper.utils.structured_array.StructuredArrayFile(fpath, 'rb',reader=reader)
+	f = spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath, 'rb',reader=reader)
 	result = f.read(count = chunk_size)
 	
 	mutate_result = False

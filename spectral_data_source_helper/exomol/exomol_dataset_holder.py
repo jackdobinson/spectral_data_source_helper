@@ -9,14 +9,15 @@ from pathlib import Path
 import numpy as np
 import numpy.lib.recfunctions
 
-from .utils import fetch
-from .utils import read
-from .utils import structured_array
-
+from spectral_data_source_helper.utils import fetch
+from spectral_data_source_helper.utils import read
+from spectral_data_source_helper.utils import structured_array
+from spectral_data_source_helper.cfg.cont import (
+	PKG_CACHE,
+)
 from .cfg.const import (
 	EXOMOL_API_URL_FMT,
 	EXOMOL_URL_PREFIX,
-	EXOMOL_CACHE,
 	EXOMOL_STATE_FILE_ENDINGS,
 	EXOMOL_TRANSITION_FILE_ENDINGS,
 	EXOMOL_API_INTERNAL_URL_START,
@@ -25,26 +26,26 @@ from .cfg.const import (
 	TRANS_STR_FLOAT32_FACTOR,
 )
 
-import exomol_helper.qn_set_manager
-import exomol_helper.broad_file_manager
+import qn_set_manager
+import broad_file_manager
 
-#from exomol_helper.cfg.log import progress_lgr
-from exomol_helper.cfg.log import pkg_logger as _lgr
+#from spectral_data_source_helper.cfg.log import progress_lgr
+from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
 
-from exomol_helper.datatypes import (
+from .datatypes import (
 	ExomolDatasetInfo,
 	BroadeningSourceCode,
 )
 
-from exomol_helper.exomol_index_types import (
+from .exomol_index_types import (
 	mol_formula_to_api_mol,
 	ExomolIsotopeDef,
 )
 
-import exomol_helper.calc.numba
-import exomol_helper.calc.numba.transition_states
-import exomol_helper.calc.numba.spec
-import exomol_helper.calc.numba.broadening
+import spectral_data_source_helper.calc.numba
+import spectral_data_source_helper.calc.numba.transition_states
+import spectral_data_source_helper.calc.numba.spec
+import spectral_data_source_helper.calc.numba.broadening
 
 #BYTES_DTYPE = np.dtype(np.uint8)
 BYTES_DTYPE = np.dtype(np.uint64)
@@ -110,7 +111,7 @@ class ExomolDatasetHolder:
 			_lgr.info(f'{isotope_def_url_candidates=}')
 			for isotope_def_url in isotope_def_url_candidates:
 				try:
-					self._isotope_def = ExomolIsotopeDef(mol_formula=self.d.mol_formula, **json.loads(fetch.file_from_cache(isotope_def_url, cache=EXOMOL_CACHE)))
+					self._isotope_def = ExomolIsotopeDef(mol_formula=self.d.mol_formula, **json.loads(fetch.file_from_cache(isotope_def_url, cache=PKG_CACHE)))
 				except Exception as e:
 					error = e
 				else:
@@ -124,7 +125,7 @@ class ExomolDatasetHolder:
 	
 	@property
 	def api_data(self) -> str:
-		api_json = json.loads(fetch.file_from_cache(EXOMOL_API_URL_FMT.format(mol_formula_to_api_mol(self.d.mol_formula)), cache=EXOMOL_CACHE))
+		api_json = json.loads(fetch.file_from_cache(EXOMOL_API_URL_FMT.format(mol_formula_to_api_mol(self.d.mol_formula)), cache=PKG_CACHE))
 		return api_json[self.d.iso_formula]
 	
 	@property
@@ -153,7 +154,7 @@ class ExomolDatasetHolder:
 	def api_broad_urls(self) -> dict[str,str]:
 		if self._api_broad_urls is None:
 			#print(f'{self._api_broad_urls=}')
-			self._api_broad_urls = exomol_helper.broad_file_manager.search_broad_files_for(self.d.mol_formula, self.d.iso_slug)
+			self._api_broad_urls = broad_file_manager.search_broad_files_for(self.d.mol_formula, self.d.iso_slug)
 			#print(f'{self._api_broad_urls=}')
 		return self._api_broad_urls
 	
@@ -204,16 +205,16 @@ class ExomolDatasetHolder:
 
 			states_url = self.api_states_urls[0]
 			if states_url.endswith('.bz2'):
-				states_numpy_fpath = (EXOMOL_CACHE / f'{self.api_states_urls[0]}').with_suffix('.npz')
+				states_numpy_fpath = (PKG_CACHE / f'{self.api_states_urls[0]}').with_suffix('.npz')
 			else:
-				states_numpy_fpath = (EXOMOL_CACHE / f'{self.api_states_urls[0]}.npz')
+				states_numpy_fpath = (PKG_CACHE / f'{self.api_states_urls[0]}.npz')
 			
 			if states_numpy_fpath.exists():
 				self._states = np.load(states_numpy_fpath)['states']
 			else:
 				# load from web/cache
 				self._states = np.loadtxt(
-					fetch.file_from_cache(f'https://www.{self.api_states_urls[0]}',cache=EXOMOL_CACHE,return_fpath=True), 
+					fetch.file_from_cache(f'https://www.{self.api_states_urls[0]}',cache=PKG_CACHE,return_fpath=True), 
 					dtype = self.states_dtype,
 					delimiter=None
 				)
@@ -231,7 +232,7 @@ class ExomolDatasetHolder:
 		if self._trans_n_cols is None:
 			#print('### GETTING TRANS N COLS ### ')
 
-			trans_fpath = self.trans_file_precidence(fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=EXOMOL_CACHE,return_fpath=True))
+			trans_fpath = self.trans_file_precidence(fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=PKG_CACHE,return_fpath=True))
 			
 			#print(f'{trans_fpath=}')
 			
@@ -240,7 +241,7 @@ class ExomolDatasetHolder:
 					self._trans_n_cols = len(aline.split())
 					break
 			elif ('.trans.bin' in trans_fpath.name):
-				self._trans_n_cols = len(exomol_helper.utils.read.bin_file_dtype(trans_fpath).names)
+				self._trans_n_cols = len(spectral_data_source_helper.utils.read.bin_file_dtype(trans_fpath).names)
 			else:
 				raise RuntimeError(f"Could not read transitio file {trans_fpath} to get number of columns")
 			
@@ -386,7 +387,7 @@ class ExomolDatasetHolder:
 		"""
 		if self._possible_qn_sets is None:
 			transition_state_names = self.transition_state_names
-			self._possible_qn_sets = dict((k,['J"',*v]) for k,v in exomol_helper.qn_set_manager.qn_set.items() if all(x in transition_state_names for x in v))
+			self._possible_qn_sets = dict((k,['J"',*v]) for k,v in qn_set_manager.qn_set.items() if all(x in transition_state_names for x in v))
 			#_lgr.debug(f'{self._possible_qn_sets=}')
 		return self._possible_qn_sets
 	
@@ -400,7 +401,7 @@ class ExomolDatasetHolder:
 		n_broad_entries_dict = dict()
 		for bg_name, broad_url in self._api_broad_urls.items():
 			n_broad_entries_dict.setdefault(bg_name,0)
-			fpath = fetch.file_from_cache(broad_url, cache=EXOMOL_CACHE, return_fpath=True)
+			fpath = fetch.file_from_cache(broad_url, cache=PKG_CACHE, return_fpath=True)
 			
 			with open(fpath, 'r') as f:
 				for aline in f:
@@ -429,7 +430,7 @@ class ExomolDatasetHolder:
 		# populate broadening array
 		for bg_name, broad_url in self._api_broad_urls.items():
 			i_bg.setdefault(bg_name,0)
-			fpath = fetch.file_from_cache(broad_url, cache=EXOMOL_CACHE, return_fpath=True)
+			fpath = fetch.file_from_cache(broad_url, cache=PKG_CACHE, return_fpath=True)
 			
 			with open(fpath, 'r') as f:
 				for aline in f:
@@ -552,7 +553,7 @@ class ExomolDatasetHolder:
 			
 			# Build `broad_map` for this dataset.
 			for bg_name, broad_url in self._api_broad_urls.items():
-				fpath = fetch.file_from_cache(broad_url, cache=EXOMOL_CACHE, return_fpath=True)
+				fpath = fetch.file_from_cache(broad_url, cache=PKG_CACHE, return_fpath=True)
 				
 				with open(fpath, 'r') as f:
 					self._broad_map.setdefault(bg_name, dict())
@@ -586,7 +587,7 @@ class ExomolDatasetHolder:
 				tuple(
 					fetch.file_from_cache(
 						f'https://www.{x}',
-						EXOMOL_CACHE,
+						PKG_CACHE,
 						return_fpath=True
 					) for x in self.api_partition_function_urls
 				),
@@ -598,7 +599,7 @@ class ExomolDatasetHolder:
 	
 	def cache_data(
 			self, 
-			cache=EXOMOL_CACHE, 
+			cache=PKG_CACHE, 
 			refresh : bool = False
 	) -> None:
 		_lgr.info(f'Downloading data for "{self.d}"')
@@ -658,7 +659,7 @@ class ExomolDatasetHolder:
 		_lgr.debug(f'Transition files have {self.trans_n_cols} columns.')
 		
 		if trans_fpaths is None:
-			trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
+			trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=PKG_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
 		
 		for fpath, chunk in read.files_via_structured_array_chunk(
 				trans_fpaths,
@@ -684,7 +685,7 @@ class ExomolDatasetHolder:
 		_lgr.info(f'Starting to convert transition files at {dt_start}')		
 		_lgr.info(f'Transition files have {self.trans_n_cols} columns.')
 		
-		old_trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=EXOMOL_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
+		old_trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=PKG_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
 		
 		for old_trans_fpath in old_trans_fpaths:
 		
@@ -783,19 +784,19 @@ class ExomolDatasetHolder:
 			trans_states_chunk_part = trans_states_chunk[chunk_slice]
 			
 			for state_name, lower_state_name, upper_state_name in zip(self.states_dtype.names, self.lower_state_names, self.upper_state_names):
-				exomol_helper.calc.numba.transition_states.transition_states_populate_state(
+				spectral_data_source_helper.calc.numba.transition_states.transition_states_populate_state(
 					self.states[state_name],
 					trans_chunk['lower_id'],
 					trans_chunk['upper_id'],
 					trans_states_chunk_part[lower_state_name],
 					trans_states_chunk_part[upper_state_name]
 				)
-				#exomol_helper.calc.numba.transition_states.transition_states_populate_state.parallel_diagnostics(level=4)
+				#spectral_data_source_helper.calc.numba.transition_states.transition_states_populate_state.parallel_diagnostics(level=4)
 				#raise RuntimeError('Parallel diagnostics')
 				#print(f'{trans_states_chunk_part[lower_state_name]=}')
 			
 			if calc_wavenumber_flag:
-				exomol_helper.calc.numba.transition_states.transition_states_einstein_A_and_wavenumber(
+				spectral_data_source_helper.calc.numba.transition_states.transition_states_einstein_A_and_wavenumber(
 					trans_chunk['einstein_A'],
 					trans_states_chunk_part['E\''],
 					trans_states_chunk_part['E"'],
@@ -880,7 +881,7 @@ class ExomolDatasetHolder:
 			# When the wavenumber is zero we want to set the einstein_A to zero, and
 			# set the wavenumber to 1 to avoid NANs, but still get zero contribution from
 			# the line.
-			exomol_helper.calc.numba.copy_pair_if_value_then_const(
+			spectral_data_source_helper.calc.numba.copy_pair_if_value_then_const(
 				trans_states_chunk['wavenumber'],
 				trans_states_chunk['einstein_A'],
 				line_data_chunk_part['wavenumber'],
@@ -891,12 +892,12 @@ class ExomolDatasetHolder:
 			)
 			
 			for name in (x for x in cols_from_trans_states if x not in ('wavenumber', 'einstein_A')):
-				exomol_helper.calc.numba.copy(
+				spectral_data_source_helper.calc.numba.copy(
 					trans_states_chunk[name],
 					line_data_chunk_part[name]
 				)
 			
-			exomol_helper.calc.numba.spec.spec_line_intensity_lte_f(
+			spectral_data_source_helper.calc.numba.spec.spec_line_intensity_lte_f(
 				T_ref,
 				Q_ref,
 				line_data_chunk_part['E"'],
@@ -933,7 +934,7 @@ class ExomolDatasetHolder:
 				#ldc = np.lib.recfunctions.structured_to_unstructured(line_data_chunk[broad_var_names], float)
 				#print(f'{ldc=}')
 				
-				exomol_helper.calc.numba.broadening.assign_broadening_parameters(
+				spectral_data_source_helper.calc.numba.broadening.assign_broadening_parameters(
 					trans_states_chunk_bytes,
 					broad_array_part,
 					broad_comp_mask_part,
@@ -1098,29 +1099,29 @@ class ExomolDatasetHolder:
 			#)
 			
 			"""
-			exomol_helper.calc.numba.spec.stimulated_emission_v(
+			spectral_data_source_helper.calc.numba.spec.stimulated_emission_v(
 				line_data_chunk['wavenumber'],
 				T,
 				out = stimulated_emission_ratio_part	
 			)
-			exomol_helper.calc.numba.divide_2d_1d(
+			spectral_data_source_helper.calc.numba.divide_2d_1d(
 				stimulated_emission_ratio_part,
 				line_data_chunk['spec_stim_emission'],
 				out = stimulated_emission_ratio_part
 			)
 			
-			exomol_helper.calc.numba.spec.boltzmann_population_v(
+			spectral_data_source_helper.calc.numba.spec.boltzmann_population_v(
 				line_data_chunk['E"'],
 				T,
 				out = boltz_pop_ratio_part	
 			)
-			exomol_helper.calc.numba.divide_2d_1d(
+			spectral_data_source_helper.calc.numba.divide_2d_1d(
 				boltz_pop_ratio_part,
 				line_data_chunk['spec_boltz_pop'],
 				out = boltz_pop_ratio_part
 			)
 			
-			exomol_helper.calc.numba.spec.line_strength_from_temp_ratios(
+			spectral_data_source_helper.calc.numba.spec.line_strength_from_temp_ratios(
 				line_data_chunk['spec_line_intensity'],
 				Q_ratio,
 				stimulated_emission_ratio_part,
@@ -1128,18 +1129,18 @@ class ExomolDatasetHolder:
 				out = line_strengths_at_temp_part
 			)
 			
-			exomol_helper.calc.numba.is_gt_2d_0d(
+			spectral_data_source_helper.calc.numba.is_gt_2d_0d(
 				line_strengths_at_temp_part,
 				continuum_line_intensity_cutoff,
 				out = strong_line_mask_part,
 			)
 			
-			exomol_helper.calc.numba.logical_not_2d(
+			spectral_data_source_helper.calc.numba.logical_not_2d(
 				strong_line_mask_part,
 				out = weak_line_mask_part
 			)
 			
-			exomol_helper.calc.numba.count_true_2d_to_1d(
+			spectral_data_source_helper.calc.numba.count_true_2d_to_1d(
 				strong_line_mask_part,
 				out_count=n_strong_lines,
 			)
@@ -1149,7 +1150,7 @@ class ExomolDatasetHolder:
 			
 			#print(f'{np.count_nonzero(weak_line_mask_part)=}')
 			
-			exomol_helper.calc.numba.get_valid_bin_indices_of_sets(
+			spectral_data_source_helper.calc.numba.get_valid_bin_indices_of_sets(
 				continuum_bin_edges,
 				line_data_chunk['wavenumber'],
 				weak_line_mask_part,
@@ -1161,7 +1162,7 @@ class ExomolDatasetHolder:
 			#print(f'{bin_indices_part=}')
 			#print(f'{np.count_nonzero(weak_line_mask_part)=}')
 			
-			exomol_helper.calc.numba.count_true_2d_to_1d(
+			spectral_data_source_helper.calc.numba.count_true_2d_to_1d(
 				weak_line_mask_part,
 				out_count = n_weak_lines_in_continuum,
 			)
@@ -1171,7 +1172,7 @@ class ExomolDatasetHolder:
 			_lgr.info(f'{n_weak_lines_in_continuum=} {n_weak_lines_outside_continuum=}')
 			
 			
-			exomol_helper.calc.numba.spec.accumulate_pseudocontinuum(
+			spectral_data_source_helper.calc.numba.spec.accumulate_pseudocontinuum(
 				weak_line_mask_part,
 				bin_indices_part,
 				line_strengths_at_temp_part,

@@ -7,7 +7,7 @@ from numba import njit, prange
 from .scipy import voigt_profile
 
 
-from exomol_helper.cfg.const import (
+from spectral_data_source_helper.cfg.const import (
 	c_light_cgs,
 	c2_cgs,
 	T_ref, 
@@ -16,13 +16,13 @@ from exomol_helper.cfg.const import (
 	N_avogadro,
 )
 
-import exomol_helper.calc.numba
+import spectral_data_source_helper.calc.numba
 
 SQRT_2log2 = np.sqrt(2*np.log(2))
 
 LINESHAPE_ID_VOIGT = 0
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def doppler_width(
 		temp: float, 
 		iso_mass : float,
@@ -50,7 +50,7 @@ def doppler_width(
 	for i in prange(wavenumber.shape[0]):
 		out[i] = doppler_width_const_cgs * wavenumber[i] * np.sqrt( temp / iso_mass)
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def lorentz_width(
 		pressure_ratio: float, 
 		temp: float,
@@ -70,7 +70,7 @@ def lorentz_width(
 	for i in prange(gamma_self.shape[0]):
 		out[i] = (tref/temp)**(n_amb[i]*amb_frac + n_self[i]*(1-amb_frac))*(gamma_amb[i]*amb_frac + gamma_self[i]*(1-amb_frac))*pressure_ratio
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def pseudo_continuum(
 		pressure : float,
 		temp : np.ndarray, # [N_temp]
@@ -181,14 +181,14 @@ def pseudo_continuum(
 				if 0 <= ii and ii < out.shape[1]:
 					out[j,ii] += store_x[2,i] * store_y[k] / lineshape_sum
 		
-		exomol_helper.calc.numba.divide(
+		spectral_data_source_helper.calc.numba.divide(
 			out[j],
 			continuum_bin_widths,
 			out = out[j]
 		)
 
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def stimulated_emission_f(
 		transition_wavenumber : np.ndarray, # Energy difference between upper and lower states. Can be approximated by center of bin wavenumber (may need to convert units)
 		temp : float,
@@ -197,7 +197,7 @@ def stimulated_emission_f(
 	for i in prange(transition_wavenumber.shape[0]):
 		out[i] = 1 - np.exp(-transition_wavenumber[i]*c2_cgs/temp)
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def stimulated_emission_v(
 		transition_wavenumber : np.ndarray, # Energy difference between upper and lower states. Can be approximated by center of bin wavenumber (may need to convert units)
 		temp : np.ndarray,
@@ -207,7 +207,7 @@ def stimulated_emission_v(
 		for j in range(temp.shape[0]):
 			out[j,i] = 1 - np.exp(-transition_wavenumber[i]*c2_cgs/temp[j])
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def boltzmann_population_f(
 		lower_state_energy : np.ndarray,
 		temp : float,
@@ -216,7 +216,7 @@ def boltzmann_population_f(
 	for i in prange(lower_state_energy.shape[0]):
 		out[i] = np.exp(-lower_state_energy[i]*c2_cgs/temp)
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def boltzmann_population_v(
 		lower_state_energy : np.ndarray,
 		temp : np.ndarray,
@@ -226,7 +226,7 @@ def boltzmann_population_v(
 		for j in range(temp.shape[0]):
 			out[j,i] = np.exp(-lower_state_energy[i]*c2_cgs/temp[j])
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def spec_line_intensity_lte_f(
 		temperature : float, 
 		partition_fn : float,
@@ -252,7 +252,7 @@ def spec_line_intensity_lte_f(
 		out[i] = (out_boltz_pop[i] * out_stim_emission[i] / partition_fn) * upper_state_degeneracy[i] * einstein_A[i] / (8 * np.pi * c_light_cgs * wavenumber[i] * wavenumber[i])
 
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def line_strength_from_temp_ratios(
 		line_intensity : np.ndarray, #[N_lines]
 		Q_ratio : np.ndarray, #[N_temp]
@@ -299,12 +299,12 @@ def line_strength_factor(
 		out = store[1]
 	)
 	
-	exomol_helper.calc.numba.multiply(
+	spectral_data_source_helper.calc.numba.multiply(
 		store[0],
 		store[1],
 		out=out
 	)
-	exomol_helper.calc.numba.divide_s(
+	spectral_data_source_helper.calc.numba.divide_s(
 		out,
 		partition_fn_value_at_T,
 		out=out
@@ -337,12 +337,12 @@ def line_strength_from_ref(
 		store,
 		out = out
 	)
-	exomol_helper.calc.numba.divide(
+	spectral_data_source_helper.calc.numba.divide(
 		out,
 		line_strength_factor_ref,
 		out = out
 	)
-	exomol_helper.calc.numba.multiply(
+	spectral_data_source_helper.calc.numba.multiply(
 		out,
 		line_intensity,
 		out = out
@@ -376,7 +376,7 @@ def line_strength_at_temp(
 			for i in prange(n_lines):
 				store[j,i] = 1
 	
-	Q_ref = exomol_helper.calc.numba.lin_interp_s(
+	Q_ref = spectral_data_source_helper.calc.numba.lin_interp_s(
 		partition_fn[:,0],
 		partition_fn[:,1],
 		T_ref
@@ -392,7 +392,7 @@ def line_strength_at_temp(
 	)
 	
 	for j in range(n_temp):
-		Q_temp = exomol_helper.calc.numba.lin_interp_s(
+		Q_temp = spectral_data_source_helper.calc.numba.lin_interp_s(
 			partition_fn[:,0],
 			partition_fn[:,1],
 			T[j]
@@ -410,7 +410,7 @@ def line_strength_at_temp(
 
 
 
-@njit(parallel=exomol_helper.calc.numba.PARALLEL)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def accumulate_pseudocontinuum_1d(
 	weak_line_mask : np.ndarray, #[N_lines]
 	bin_indices : np.ndarray, #[N_lines]

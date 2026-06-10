@@ -4,18 +4,17 @@ Quantum number sets are scattered aroung EXOMOL. Therefore put them here as I en
 import pickle
 
 import numpy as np
-
-from exomol_helper.cfg.const import (
-	EXOMOL_CACHE,
+from spectral_data_source_helper.cfg.cont import (
+	PKG_CACHE,
 )
 
-#from exomol_helper.cfg.log import pkg_logger as _lgr
+#from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
 ID_TYPE = np.iinfo(np.int64)
 
 MAX_QN_IN_SET = 16
 
-QN_SET_FILE = EXOMOL_CACHE / "exomol.com/db/quantum_number_sets.pkl"
-QN_SET_FILE_TEMP = EXOMOL_CACHE / "exomol.com/db/quantum_number_sets.pkl~"
+QN_SET_FILE = PKG_CACHE / "exomol.com/db/quantum_number_sets.pkl"
+QN_SET_FILE_TEMP = PKG_CACHE / "exomol.com/db/quantum_number_sets.pkl~"
 
 qn_set : dict[str, tuple[str,...]] = dict()
 

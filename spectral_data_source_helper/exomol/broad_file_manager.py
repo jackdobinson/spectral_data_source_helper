@@ -2,16 +2,20 @@
 Broadening files seem to be scattered all over EXOMOL without any nice way of finding them all
 """
 
-from exomol_helper.cfg.const import (
-	EXOMOL_CACHE,
+import spectral_data_source_helper.utils.fetch as fetch
+from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
+
+from spectral_data_source_helper.cfg.cont import (
+	PKG_CACHE,
+)
+
+from .cfg.const import (
 	EXOMOL_URL_PREFIX,
 )
 
-from exomol_helper.datatypes import IsotopeInfo
+from .datatypes import IsotopeInfo
 
-import exomol_helper.utils.fetch as fetch
 
-from exomol_helper.cfg.log import pkg_logger as _lgr
 
 # Each molecule seems to have a "main isotope", however it is not actually specified so
 # just assume it is the first one encountered at this point.
@@ -31,7 +35,7 @@ broadener_type_map : dict[str,tuple[str,...]] = {
 broad_files : dict[str, dict[str, dict[str, str]]] = dict()
 
 def search_broad_files_for(mol_formula : str, iso_slug : str):
-	global broad_files
+	#global broad_files
 	
 	# check to see if we already have files
 	if (result := broad_files.get(mol_formula, dict()).get(iso_slug, None) is not None):
@@ -51,7 +55,7 @@ def search_broad_files_for(mol_formula : str, iso_slug : str):
 			for url_candidate in broadener_url_candidates:
 				broadener_fpath = fetch.file_from_cache(
 					f'https://www.{url_candidate}',
-					cache=EXOMOL_CACHE,
+					cache=PKG_CACHE,
 					return_fpath=True,
 					not_found_in_cache_action='return_none',
 					error_code_action = {404 : 'ignore', 'timeout' : 'warning'},
@@ -79,7 +83,7 @@ def search_broad_files_for(mol_formula : str, iso_slug : str):
 		broadener_url = None
 		for url_candidate in broadener_url_candidates:
 			try:
-				fetch.file_from_cache(f'https://www.{url_candidate}',cache=EXOMOL_CACHE,return_fpath=True)
+				fetch.file_from_cache(f'https://www.{url_candidate}',cache=PKG_CACHE,return_fpath=True)
 			except:
 				broadener_url = None
 			else:

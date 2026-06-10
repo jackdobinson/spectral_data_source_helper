@@ -7,32 +7,32 @@ import datetime as dt
 
 import numpy as np
 
-from exomol_helper.cfg.const import (
+from spectral_data_source_helper.cfg.const import (
 	CHUNK_SIZE,
 	REPO_LOCAL,
 	T_ref,
 	P_ref,
 )
 
-from exomol_helper.datatypes import (
+from spectral_data_source_helper.datatypes import (
 	ExomolDatasetInfo,
 )
 
-from exomol_helper.exomol_dataset_holder import ExomolDatasetHolder
+from spectral_data_source_helper.exomol_dataset_holder import ExomolDatasetHolder
 
-from exomol_helper.exomol import (
+from spectral_data_source_helper.exomol import (
 	exomol_all_dataset_name_dict,
 )
 
-import exomol_helper.utils
-import exomol_helper.utils.dtype
-import exomol_helper.utils.structured_array
+import spectral_data_source_helper.utils
+import spectral_data_source_helper.utils.dtype
+import spectral_data_source_helper.utils.structured_array
 
-import exomol_helper.calc.pseudo_continuum
-import exomol_helper.calc.spec
+import spectral_data_source_helper.calc.pseudo_continuum
+import spectral_data_source_helper.calc.spec
 
 import logging
-from exomol_helper.cfg.log import pkg_logger, progress_lgr
+from spectral_data_source_helper.cfg.log import pkg_logger, progress_lgr
 
 
 mol_iso_dataset_dict = exomol_all_dataset_name_dict()
@@ -178,7 +178,7 @@ def exomol_states(
 		states_names = ' '.join(ds_holder.states_short_names)
 		print(f'    names: {states_names}')
 		
-		states_types = ' '.join(exomol_helper.utils.dtype.field_type_strings(states_dtype))
+		states_types = ' '.join(spectral_data_source_helper.utils.dtype.field_type_strings(states_dtype))
 		print(f'    types: {states_types}')
 		
 		print(f'    Printing states in slice {slice_to_print}:')
@@ -192,7 +192,7 @@ def exomol_trans(
 		n_to_print : int = 10,
 		chunk_size : int = CHUNK_SIZE,
 ):
-	import exomol_helper.cfg.log # for later
+	import spectral_data_source_helper.cfg.log # for later
 	
 	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
@@ -214,7 +214,7 @@ def exomol_trans(
 			print(f'        {afile}')
 		
 		print('    Transition reading speed check:')
-		exomol_helper.cfg.log.progress_stream_hdlr.terminator='\n'
+		spectral_data_source_helper.cfg.log.progress_stream_hdlr.terminator='\n'
 		
 		n_seconds = 30
 		dt_start = dt.datetime.now()
@@ -223,7 +223,7 @@ def exomol_trans(
 			if (dt_split - dt_start).total_seconds() >= n_seconds:
 				break
 		
-		exomol_helper.cfg.log.progress_stream_hdlr.terminator='\r'
+		spectral_data_source_helper.cfg.log.progress_stream_hdlr.terminator='\r'
 		
 		print(f'    First {n_to_print} transitions ({ds_holder.n_transitions} in total):')
 		do_stop = False
@@ -275,7 +275,7 @@ def exomol_calc_line_data(
 	for ds_holder in dataset_holders:
 		with open(REPO_LOCAL / f'{ds_holder.datafile_prefix}.lines', 'wb') as f:
 			# Write dtype header
-			f.write(exomol_helper.utils.dtype.to_string(ds_holder.line_data_dtype).encode('ascii'))
+			f.write(spectral_data_source_helper.utils.dtype.to_string(ds_holder.line_data_dtype).encode('ascii'))
 			
 			# Write line data
 			for line_data_chunk in ds_holder.iter_line_data(chunk_size=chunk_size):
@@ -317,7 +317,7 @@ def exomol_read_line_data(
 				hdr_part += f.read(1)
 			
 			if (hdr_part.count(b'{') == hdr_part.count(b'}')):
-				use_dtype = exomol_helper.utils.dtype.from_string(hdr_part.decode('ascii'))
+				use_dtype = spectral_data_source_helper.utils.dtype.from_string(hdr_part.decode('ascii'))
 			else:
 				raise RuntimeError(f'Could not read header. Got "{hdr_part}"')
 			
@@ -381,8 +381,8 @@ def exomol_calc_continuum(
 			print(f'Written continum bin edge data to "{str(contbins_fpath)}"')
 		
 		try:
-			continuum_fhdls = tuple(exomol_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in continuum_fpaths)
-			stronglines_fhdls = tuple(exomol_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in stronglines_fpaths)
+			continuum_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in continuum_fpaths)
+			stronglines_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in stronglines_fpaths)
 		
 			for n_strong_lines, n_weak_lines_in_continuum, strong_lines_chunks, pseudo_continuum_contributions in ds_holder.iter_lines_and_continuum_at_temp(
 				T = temperature_arr, 
@@ -502,7 +502,7 @@ def exomol_read_continuum_data(
 		else:
 			print(f'    Calculation temperature is {temp}')
 		
-		with exomol_helper.utils.structured_array.StructuredArrayFile(line_data_fpath,'rb') as f:
+		with spectral_data_source_helper.utils.structured_array.StructuredArrayFile(line_data_fpath,'rb') as f:
 			line_data = f.read()
 		
 		if line_data is None:
@@ -521,7 +521,7 @@ def exomol_read_continuum_data(
 		print(f'{continuum_bin_edges.shape=}')
 		
 		continuum_data = None
-		with exomol_helper.utils.structured_array.StructuredArrayFile(continuum_data_fpath, 'rb') as f:
+		with spectral_data_source_helper.utils.structured_array.StructuredArrayFile(continuum_data_fpath, 'rb') as f:
 			print('    Reading continuum data.')
 			continuum_data = f.read()
 		
@@ -596,7 +596,7 @@ def exomol_read_continuum_data(
 					plt.plot(continuum_bin_mids, continuum_data_means[field_name])
 				plt.show()
 			
-			pseudo_continuum_data = exomol_helper.calc.pseudo_continuum.pseudo_continuum(
+			pseudo_continuum_data = spectral_data_source_helper.calc.pseudo_continuum.pseudo_continuum(
 				1,
 				temp,
 				ds_holder.partition_function_at(temp),
@@ -626,7 +626,7 @@ def exomol_read_continuum_data(
 			
 			pltr.ax.plot(
 				line_data['wavenumber'], 
-				exomol_helper.calc.spec.line_strengths(line_data, np.array([temp]), ds_holder.partition_function, T_ref, squeeze=True),
+				spectral_data_source_helper.calc.spec.line_strengths(line_data, np.array([temp]), ds_holder.partition_function, T_ref, squeeze=True),
 				'.',
 				markersize=1,
 				alpha=0.1,

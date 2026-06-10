@@ -16,7 +16,7 @@ from ..cfg.const import (
 	c2_cgs,
 )
 
-import exomol_helper.calc.numba.spec
+import spectral_data_source_helper.calc.numba.spec
 
 
 SQRT_2log2 = np.sqrt(2*np.log(2))
@@ -119,7 +119,7 @@ def pseudo_continuum(
 	
 	print(f'{partition_fn_at_temp=}')
 
-	exomol_helper.calc.numba.spec.pseudo_continuum(
+	spectral_data_source_helper.calc.numba.spec.pseudo_continuum(
 		pressure,
 		temp,
 		partition_fn_at_temp,
@@ -138,7 +138,7 @@ def pseudo_continuum(
 		T_cont = T_cont,
 		P_cont = P_cont,
 		n_neighbour_bins = n_neighbour_bins,
-		lineshape_id = exomol_helper.calc.numba.spec.LINESHAPE_ID_VOIGT,
+		lineshape_id = spectral_data_source_helper.calc.numba.spec.LINESHAPE_ID_VOIGT,
 		
 		out = result,
 		store_x = store_x,
