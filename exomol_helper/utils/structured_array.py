@@ -1,7 +1,6 @@
 
 from typing import Literal, Self
 from pathlib import Path
-import bz2
 
 import numpy as np
 

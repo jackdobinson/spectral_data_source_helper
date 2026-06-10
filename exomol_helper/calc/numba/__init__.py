@@ -348,7 +348,6 @@ def get_valid_bin_indices_at_mask(
 	return n_valid_idxs
 
 
-# NOTE: THIS DOES NOT WORK YET, HAS AN INFINITE LOOP
 @njit(parallel=False)
 def get_valid_bin_indices_of_sets(
 	bin_edges : np.ndarray, #[N_bins+1]
