@@ -10,8 +10,8 @@ from .scipy import voigt_profile
 from spectral_data_source_helper.cfg.const import (
 	c_light_cgs,
 	c2_cgs,
-	T_ref, 
-	P_ref,
+	GLOBAL_T_ref, 
+	GLOBAL_P_ref,
 	k_boltzmann_cgs,
 	N_avogadro,
 )
@@ -62,7 +62,7 @@ def lorentz_width(
 		
 		out : np.ndarray,
 		
-		tref : float = T_ref,
+		tref : float = GLOBAL_T_ref,
 ):
 	"""
 	Calculate pressure-broadened width HWHM (half-width-half-maximum) of cauchy-lorentz distribution.
@@ -92,8 +92,8 @@ def pseudo_continuum(
 		store_x : np.ndarray, #[3,N_bins]
 		store_y : np.ndarray, #[2*n_neighbour_bins+1]
 		
-		T_cont : float = T_ref, # Temperature the pseudo-continuum was calculate at
-		P_cont : float = P_ref, # Pressure the pseudo-continuum was calculated at
+		T_cont : float = GLOBAL_T_ref, # Temperature the pseudo-continuum was calculate at
+		P_cont : float = GLOBAL_P_ref, # Pressure the pseudo-continuum was calculated at
 		n_neighbour_bins : int = 3, # number of bins around center to calculate line-spilling for
 		
 		lineshape_id : int = LINESHAPE_ID_VOIGT, # ID number of the lineshape to use
@@ -361,7 +361,7 @@ def line_strength_at_temp(
 		
 		store : None | np.ndarray = None, #[3, N_lines]
 		
-		T_ref : float = T_ref,
+		T_ref : float = GLOBAL_T_ref,
 ):
 	"""
 	Compute line strength at a temperatures `T`

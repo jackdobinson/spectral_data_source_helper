@@ -16,13 +16,13 @@ import spectral_data_source_helper.calc.pseudo_continuum
 import spectral_data_source_helper.calc.spec
 
 from spectral_data_source_helper.cfg.log import pkg_logger, progress_lgr
-from spectral_data_source_helper.cfg.const import (
+
+from .cfg.const import (
 	CHUNK_SIZE,
 	REPO_LOCAL,
 	T_ref,
 	P_ref,
 )
-
 from .exomol_dataset_holder import ExomolDatasetHolder
 from .args.dataset_selector import DatasetSelector, select_datasets
 

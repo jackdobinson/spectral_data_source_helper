@@ -8,8 +8,8 @@ from scipy.special import (
 )
 
 from ..cfg.const import (
-	T_ref, 
-	P_ref,
+	GLOBAL_T_ref, 
+	GLOBAL_P_ref,
 	k_boltzmann_cgs,
 	N_avogadro,
 	c_light_cgs,
@@ -66,7 +66,7 @@ def lorentz_width(
 		n_self : np.ndarray,
 		gamma_amb : np.ndarray,
 		n_amb : np.ndarray,
-		tref : float = T_ref,
+		tref : float = GLOBAL_T_ref,
 ) -> np.ndarray:
 	"""
 	Calculate pressure-broadened width HWHM (half-width-half-maximum) of cauchy-lorentz distribution.
@@ -103,8 +103,8 @@ def pseudo_continuum(
 		amb_frac : float, # Fraction of ambient gas
 		Q_cont : float, # Partition function at `T_cont`
 		lineshape_fn : Callable[[np.ndarray,float,float],np.ndarray] = voigt,
-		T_cont : float = T_ref, # Temperature the pseudo-continuum was calculate at
-		P_cont : float = P_ref, # Pressure the pseudo-continuum was calculated at
+		T_cont : float = GLOBAL_T_ref, # Temperature the pseudo-continuum was calculate at
+		P_cont : float = GLOBAL_P_ref, # Pressure the pseudo-continuum was calculated at
 		n_neighbour_bins : int = 3, # number of bins around center to calculate line-spilling for
 ):
 	if not isinstance(temp, np.ndarray):

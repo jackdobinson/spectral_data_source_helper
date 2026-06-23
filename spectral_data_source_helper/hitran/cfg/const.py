@@ -1,4 +1,5 @@
-
+# flake8: noqa # flake8 ignores this file
+from ...cfg.const import *
 
 HITRAN_PF_URL_FMT = 'https://www.hitran.org/data/Q/q{global_id}.txt'
 HITRAN_160_PAR_FILE_API_URL_FMT = "https://hitran.org/lbl/api?iso_ids_list={global_id}&head=False&fixwidth=0"
@@ -21,3 +22,8 @@ HITRAN_BAD_BROADENER_LINE_STARTS : dict[int,str] = { # global id : tuple of bad 
 	153: (' 22', '0 02'),
 	157: (' 5 ', ' 53'),
 }
+
+HITRAN_T_ref         : float    = 296.0                                          # K                    HITRAN Reference temperature (Kelvin)
+HITRAN_P_ref         : float    = 1.0                                            # atm                  HITRAN Reference pressure (atm)
+T_ref                : float    = HITRAN_T_ref/GLOBAL_T_ref                      # K                    Reference temperature (Kelvin)
+P_ref                : float    = HITRAN_P_ref/GLOBAL_P_ref                      # atm                  Reference pressure (atm)

@@ -5,13 +5,14 @@ import argparse as ap
 
 from spectral_data_source_helper.dataset_selector import DatasetSelector, ALL_DATASET_SELECTOR, dataset_selector_factory
 from spectral_data_source_helper.cfg.log import pkg_logger#, progress_lgr
-from spectral_data_source_helper.cfg.const import (
-	REPO_LOCAL,
+
+from .cfg.const import (
+	#REPO_LOCAL,
 	T_ref,
 )
-
 from .hitran import HITRAN_INDEX
 #from .hitran import fetch_all_data
+
 
 
 def select_datasets(

@@ -14,8 +14,8 @@ REPO_LOCAL = REPO_ROOT / "LOCAL"
 PKG_CACHE = Path(os.path.expanduser("~/data/linedata_test_storage/cache"))
 
 
-T_ref                : float    = 296.0                                          # K                    Reference temperature (Kelvin)
-P_ref                : float    = 1.0                                            # bar                  Reference pressure (bar)
+GLOBAL_T_ref         : float    = 296.0                                          # K                    Reference temperature (Kelvin)
+GLOBAL_P_ref         : float    = 1.0                                            # atm                  Reference pressure (atm)
 
 k_B                  : float    = 1.380649E-23                                   # J K^{-1}             Boltzmann constant
 k_boltzmann          : float    = 1.380649E-23                                   # J K^{-1}             Boltzmann constant

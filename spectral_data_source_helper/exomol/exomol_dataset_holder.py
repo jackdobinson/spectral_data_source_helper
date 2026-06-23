@@ -12,20 +12,18 @@ import numpy.lib.recfunctions
 from spectral_data_source_helper.utils import fetch
 from spectral_data_source_helper.utils import read
 from spectral_data_source_helper.utils import structured_array
-from spectral_data_source_helper.cfg.const import (
+
+from .cfg.const import (
 	PKG_CACHE,
 	T_ref,
 	Dalton_cgs,
 	TRANS_STR_FLOAT32_FACTOR,
-)
-from .cfg.const import (
 	EXOMOL_API_URL_FMT,
 	EXOMOL_URL_PREFIX,
 	EXOMOL_STATE_FILE_ENDINGS,
 	EXOMOL_TRANSITION_FILE_ENDINGS,
 	EXOMOL_API_INTERNAL_URL_START,
 )
-
 from . import qn_set_manager
 from . import broad_file_manager
 
