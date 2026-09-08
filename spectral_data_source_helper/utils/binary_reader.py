@@ -123,6 +123,8 @@ class BinaryReader:
 			#print(f'{self.n=}')
 			#print(f'COMPRESSED: {self.b[:self.n]=}')
 			#print(f'{self.chunk_size=}')
+			
+			# Shove bytes into decompressor until it starts outputting data
 			nx = 0
 			while self.decompressor.needs_input and nx==0:
 				x = self.decompressor.decompress(self.b[:self.n], self.chunk_size)
@@ -140,13 +142,15 @@ class BinaryReader:
 			#print('-----------', flush=True)
 			#print(f'XX: {self.b[:self.n]=}')
 			
-			while not self.decompressor.needs_input:
+			# Drain stored decompressor output
+			while not self.decompressor.needs_input and not self.decompressor.eof:
 				x = self.decompressor.decompress(b'', self.chunk_size)
 				nx = len(x)
 				self._n_bytes_output += nx
 				yield nx, x
 			
 			#print('============', flush=True)
+		yield 0, b'' # Final yield is zero bytes
 	
 	def iter_bytes(self) -> tuple[int,bytes]:
 		#print('iter_bytes()', flush=True)

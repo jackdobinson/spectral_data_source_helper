@@ -26,6 +26,7 @@ from .cfg.const import (
 )
 from . import qn_set_manager
 from . import broad_file_manager
+from .c_compat import ConvertTransToBin32#, run_main #convert_trans_to_bin32
 
 #from spectral_data_source_helper.cfg.log import progress_lgr
 from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
@@ -641,6 +642,19 @@ class ExomolDatasetHolder:
 			_lgr.debug(f'{new_fpath=}')
 			if new_fpath.exists():
 				_lgr.debug('EXISTS')
+				
+				"""
+				if (
+					new_fpath.name.endswith('.bin32')
+					or new_fpath.name.endswith('.bin32.bz2')
+					or new_fpath.name.endswith('.bin32.xz')
+				):
+					self._trans_dtype = self.trans32_dtype
+				else:
+					self._trans_dtype = None
+				"""
+				
+				
 				return new_fpath
 			_lgr.debug('DOES NOT EXIST')
 			
@@ -706,31 +720,37 @@ class ExomolDatasetHolder:
 							f.write(trans_chunk)
 				
 				elif fmt == '.bin32':
-					with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
-						new_chunk = np.empty((chunk_size,), dtype=self.trans32_dtype)
+					if old_trans_fpath.suffix == '.trans':
+						#run_main(Path(__file__).parent / "../c_experiments/convert_trans_to_bin32.so", old_trans_fpath, new_trans_fpath)
+						result = ConvertTransToBin32.run(old_trans_fpath, new_trans_fpath)
+						_lgr.info(f'File converted in {result.time_elapsed_sec:.2f} sec {result.bytes_sec/(1024*1024):.2f} MB/s {result.entries_sec*1E-6:.2f} Million Entries/s')
+					else:
 						
-						for trans_chunk in self.iter_transitions(
-								chunk_size=chunk_size,
-								trans_fpaths=[old_trans_fpath]
-						):
-							# 32 bit floating point does not have enough exponent to represent the smallest line strength
-							# values. Therefore multiply by a factor to bring them into range. When reading, divide by that
-							# factor.
-							chunk_slice = tuple(slice(s) for s in trans_chunk.shape)
-							trans_chunk['einstein_A'] *= TRANS_STR_FLOAT32_FACTOR
+						with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
+							new_chunk = np.empty((chunk_size,), dtype=self.trans32_dtype)
 							
-							# Check that state ID numbers can fit into 32 bit unsigned integer
-							assert np.all(
-								(0 <= trans_chunk['lower_id']) 
-								& (trans_chunk['lower_id'] <= ((2**32) - 1))
-								& (0 <= trans_chunk['upper_id']) 
-								& (trans_chunk['upper_id'] <= ((2**32) - 1))
-							), f'State ID numbers must be within the range [0,{2**32-1}] to write to {fmt}'
-							
-							for name in trans_chunk.dtype.names:
-								new_chunk[name][chunk_slice] = trans_chunk[name]
-							
-							f.write(new_chunk)
+							for trans_chunk in self.iter_transitions(
+									chunk_size=chunk_size,
+									trans_fpaths=[old_trans_fpath]
+							):
+								# 32 bit floating point does not have enough exponent to represent the smallest line strength
+								# values. Therefore multiply by a factor to bring them into range. When reading, divide by that
+								# factor.
+								chunk_slice = tuple(slice(s) for s in trans_chunk.shape)
+								trans_chunk['einstein_A'] *= TRANS_STR_FLOAT32_FACTOR
+								
+								# Check that state ID numbers can fit into 32 bit unsigned integer
+								assert np.all(
+									(0 <= trans_chunk['lower_id']) 
+									& (trans_chunk['lower_id'] <= ((2**32) - 1))
+									& (0 <= trans_chunk['upper_id']) 
+									& (trans_chunk['upper_id'] <= ((2**32) - 1))
+								), f'State ID numbers must be within the range [0,{2**32-1}] to write to {fmt}'
+								
+								for name in trans_chunk.dtype.names:
+									new_chunk[name][chunk_slice] = trans_chunk[name]
+								
+								f.write(new_chunk)
 				
 				elif fmt == '.npy':
 					result = []

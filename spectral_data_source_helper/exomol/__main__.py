@@ -322,6 +322,8 @@ def action_calc_continuum(
 				
 				dt_start_write = dt.datetime.now()
 				
+				#strong_lines_chunks = tuple(strong_lines_chunks)
+				
 				for slc, fhdl in zip(strong_lines_chunks, stronglines_fhdls):
 					fhdl.write(slc)
 				
@@ -339,6 +341,9 @@ def action_calc_continuum(
 				dt_elapsed_str = f'{dt_elapsed_delta.days}D {dt_elapsed_delta.seconds//3600}H {(dt_elapsed_delta.seconds %3600)//60}M {dt_elapsed_delta.seconds%60}s'
 				
 				if (dt_split - dt_split_2).total_seconds() > 1:
+				
+					#print(f'{strong_lines_chunks[0]=}')
+				
 					dt_split_2 = dt.datetime.now()
 					print(f'Writing data to files took {1000*(dt_split - dt_start_write).total_seconds()} ms.')
 					
