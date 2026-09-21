@@ -142,7 +142,7 @@ def action_trans(
 		print('    Transition reading speed check:')
 		spectral_data_source_helper.cfg.log.progress_stream_hdlr.terminator='\n'
 		
-		n_seconds = 30
+		n_seconds = 10
 		dt_start = dt.datetime.now()
 		for j, transition_chunk in enumerate(ds_holder.iter_transitions(chunk_size=chunk_size)):
 			dt_split = dt.datetime.now()

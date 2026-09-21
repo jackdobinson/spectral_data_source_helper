@@ -11,8 +11,9 @@ if [[ "${DEBUG}" == "TRUE" ]]; then
 	unset DEBUGINFOD_URLS
 	gcc -g -O1 -o convert_trans_to_bin32 convert_trans_to_bin32.c
 else
-	gcc -O3 -o convert_trans_to_bin32 convert_trans_to_bin32.c
-	gcc -O3 -fPIC -shared -o convert_trans_to_bin32.so convert_trans_to_bin32.c
+	#gcc -O3 -flto -o convert_trans_to_bin32 convert_trans_to_bin32.c
+	gcc -Ofast -fomit-frame-pointer -march=native -flto -o convert_trans_to_bin32 convert_trans_to_bin32.c
+	gcc -O3 -flto -fPIC -shared -o convert_trans_to_bin32.so convert_trans_to_bin32.c
 fi
 
 #exit # ONLY COMPILE
@@ -76,13 +77,17 @@ for file in ${files[@]}; do
 		./convert_trans_to_bin32 "${transfile}" "${transfile}.bin32"
 	fi
 	
+	success="$?"
+	
 	SPLIT_TIME_1=$(date -u +%s.%N)
 	
 	split_time=$(bc -l <<<"$SPLIT_TIME_1-$SPLIT_TIME_0")
 	bytes_per_split_time=$(bc -l <<<"${filesize}.0/(${split_time}*${SIZE_DIV_FACTOR})")
 	echo "CONVERSION: Split Time ${split_time} Sec. Processed ${bytes_per_split_time} ${SIZE_SUFFIX}Bytes/Sec"
 	
-	#break
+	if [[ ! ${success} -eq 0 ]]; then
+		break
+	fi
 done
 
 END_TIME=$(date -u +%s.%N)
