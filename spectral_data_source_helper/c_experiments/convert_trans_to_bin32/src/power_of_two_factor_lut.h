@@ -1,3 +1,5 @@
+#ifndef __POWER_OF_TWO_FACTOR_LUT__INCLUDED__
+#define __POWER_OF_TWO_FACTOR_LUT__INCLUDED__
 
 /*
 	10^{n} = 2^{n} * 5^{n}
@@ -184,3 +186,5 @@ const PowerOfTwoFactorEntry power_of_two_factor_lut[161] = {
 	{79, 1448908653, 232},
 	{80, 1811135816, 235}
 };
+
+#endif //__POWER_OF_TWO_FACTOR_LUT__INCLUDED__

@@ -54,7 +54,8 @@ struct_def = textwrap.dedent("""
 with open('power_of_two_factor_lut.h', 'w') as f:
 
 	
-	
+	print("#ifndef __POWER_OF_TWO_FACTOR_LUT__INCLUDED__", file=f)
+	print("#define __POWER_OF_TWO_FACTOR_LUT__INCLUDED__", file=f)
 	print(usage, file=f)
 	
 	print(f'#define POWER_OF_TWO_FACTOR_LUT_ZERO_INDEX ({power_10_zero_index})\n', file=f)
@@ -69,3 +70,6 @@ with open('power_of_two_factor_lut.h', 'w') as f:
 		else:
 			print(f',\n\t{{{p}, {v:.0f}, {e}}}', end='', file=f)
 	print('\n};', file=f)
+	print("", file=f)
+	print("#endif //__POWER_OF_TWO_FACTOR_LUT__INCLUDED__", file=f)
+	

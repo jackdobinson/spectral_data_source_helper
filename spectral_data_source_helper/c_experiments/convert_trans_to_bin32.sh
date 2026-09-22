@@ -4,24 +4,16 @@
 SIZE_SUFFIX="M"
 SIZE_DIV_FACTOR="$((1024*1024)).0"
 
-DEBUG="TRUE"
-DEBUG="FALSE"
+SCRIPT_DIR="$(dirname ${BASH_SOURCE})"
+BIN="${SCRIPT_DIR}/convert_trans_to_bin32/bin/convert_trans_to_bin32"
 
-if [[ "${DEBUG}" == "TRUE" ]]; then 
-	unset DEBUGINFOD_URLS
-	gcc -g -O1 -o convert_trans_to_bin32 convert_trans_to_bin32.c
-else
-	#gcc -O3 -flto -o convert_trans_to_bin32 convert_trans_to_bin32.c
-	gcc -Ofast -fomit-frame-pointer -march=native -flto -o convert_trans_to_bin32 convert_trans_to_bin32.c
-	gcc -O3 -flto -fPIC -shared -o convert_trans_to_bin32.so convert_trans_to_bin32.c
-fi
-
-#exit # ONLY COMPILE
+${SCRIPT_DIR}/convert_trans_to_bin32/build.sh
 
 if [[ ! $? -eq 0 ]]; then
-	echo "COMPILATION FAILED"
-	exit
+	echo "BUILD FAILED"
+	exit 1
 fi
+
 
 START_TIME=$(date -u +%s.%N)
 total_size=0
@@ -72,9 +64,9 @@ for file in ${files[@]}; do
 	echo "CONVERTING ${transfile}"
 	
 	if [[ "${DEBUG}" == "TRUE" ]]; then 
-		gdb  --batch -ex run --args ./convert_trans_to_bin32 "${transfile}" "${transfile}.bin32"
+		gdb  --batch -ex run --args ${BIN} "${transfile}" "${transfile}.bin32"
 	else
-		./convert_trans_to_bin32 "${transfile}" "${transfile}.bin32"
+		${BIN} "${transfile}" "${transfile}.bin32"
 	fi
 	
 	success="$?"

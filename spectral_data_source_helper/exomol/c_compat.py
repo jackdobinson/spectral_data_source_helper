@@ -3,9 +3,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 import ctypes
 
-_convert_trans_to_bin32 = ctypes.CDLL(Path(__file__).parent / "../c_experiments/convert_trans_to_bin32.so")
-_convert_trans_to_bin32.main.argtypes = (ctypes.c_int, ctypes.POINTER(ctypes.c_char_p))
-_convert_trans_to_bin32.ffi_run.argtypes = (ctypes.c_int, ctypes.POINTER(ctypes.c_char_p))
+#_convert_trans_to_bin32 = ctypes.CDLL(Path(__file__).parent / "../c_experiments/convert_trans_to_bin32/lib/convert_trans_to_bin32.so")
+#_convert_trans_to_bin32.main.argtypes = (ctypes.c_int, ctypes.POINTER(ctypes.c_char_p))
+#_convert_trans_to_bin32.ffi_run.argtypes = (ctypes.c_int, ctypes.POINTER(ctypes.c_char_p))
 
 
 class FFI_TASK_INFO(ctypes.Structure):
@@ -39,7 +39,7 @@ def run_main(dll_path : Path | str, *args : tuple[Any,...]) -> int:
 	return result
 
 class ConvertTransToBin32:
-	_dll = ctypes.CDLL(Path(__file__).parent / "../c_experiments/convert_trans_to_bin32.so")
+	_dll = ctypes.CDLL(Path(__file__).parent / "../c_experiments/convert_trans_to_bin32/lib/convert_trans_to_bin32.so")
 	
 	class FFI_IN(ctypes.Structure):
 		_fields_= [
