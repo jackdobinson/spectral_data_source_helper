@@ -594,7 +594,8 @@ if __name__=='__main__':
 	parser = ap.ArgumentParser()
 	
 	parser.add_argument('-d', '--dataset_selector', action='extend', type=DatasetSelector, metavar='<Dataset Selector>', help='String that selects dataset to operate upon. Format: "<mol>/<iso>/<dataset_name>", "*" can be used as a wild card', default=None)
-	
+	parser.add_argument('-C', '--iteratively_convert', action='store_true', help='If present, will iteratively convert files to the fastest format and delete the files as they are finished with', default=False)
+	parser.add_argument('--keep_iteratively_converted', action='store_true', help='If present, will keep iteratively converted files', default=False)
 	
 	subparsers = parser.add_subparsers(required=True)
 	
@@ -668,7 +669,11 @@ if __name__=='__main__':
 	for dss_mol, dss_iso, dss_name in (dataset_selectors if dataset_selectors is not None else DatasetSelector('*')):
 		#print(f'{dss_mol=} {dss_iso=} {dss_name=}')
 		dataset_holders.extend([ExomolDatasetHolder(x) for x in select_datasets([dss_mol], [dss_iso], [dss_name])])
-		
+	
+	for dataset_holder in dataset_holders:
+		dataset_holder.iteratively_convert_to_fastest_format = arg_dict.pop("iteratively_convert", False)
+		dataset_holder.delete_iteratively_converted_files = (not arg_dict.pop("keep_iteratively_converted", False))
+	
 	# Deal with any arguments that should have default values but
 	# are not playing nice.
 	arg_not_present_sentinel = 'NOT_PRESENT'

@@ -5,6 +5,7 @@ import dataclasses as dc
 from typing import Any, Generator, Literal, ClassVar, Iterable
 import datetime as dt
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import numpy.lib.recfunctions
@@ -53,6 +54,10 @@ BYTES_DTYPE = np.dtype(np.uint64)
 @dc.dataclass
 class ExomolDatasetHolder:
 	d : ExomolDatasetInfo
+	
+	# public defaulted attributes
+	iteratively_convert_to_fastest_format : bool = False
+	delete_iteratively_converted_files : bool = True
 	
 	# private attributes
 	_api_linelist_urls : None | tuple[str,...] = None
@@ -242,7 +247,7 @@ class ExomolDatasetHolder:
 			elif ('.trans.bin' in trans_fpath.name):
 				self._trans_n_cols = len(spectral_data_source_helper.utils.read.bin_file_dtype(trans_fpath).names)
 			else:
-				raise RuntimeError(f"Could not read transitio file {trans_fpath} to get number of columns")
+				raise RuntimeError(f"Could not read transition file {trans_fpath} to get number of columns")
 			
 			#print(f'### GOT TRANS N COLS {self._trans_n_cols=} ### ')
 			
@@ -663,8 +668,13 @@ class ExomolDatasetHolder:
 			self,
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
-			trans_fpaths : None | Iterable[Path] = None # If present iterate over these files, otherwise iterate over all of them
+			trans_fpaths : None | Iterable[Path] = None, # If present iterate over these files, otherwise iterate over all of them
+			iteratively_convert_to_fastest_format : None | bool = None,
+			delete_iteratively_converted_files : None | bool = None,
 	) -> Generator[np.ndarray]:
+	
+		iteratively_convert_to_fastest_format = self.iteratively_convert_to_fastest_format if iteratively_convert_to_fastest_format is None else iteratively_convert_to_fastest_format
+		delete_iteratively_converted_files = self.delete_iteratively_converted_files if delete_iteratively_converted_files is None else delete_iteratively_converted_files
 		
 		dt_start = dt.datetime.now()
 		_lgr.debug(f'Starting reading transitions at {dt_start}')		
@@ -673,8 +683,18 @@ class ExomolDatasetHolder:
 		if trans_fpaths is None:
 			trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=PKG_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
 		
+		if iteratively_convert_to_fastest_format:
+			trans_fpaths_iter = self.iteratively_convert_files_to_fastest_format(
+				trans_fpaths, 
+				chunk_size=chunk_size, 
+				delete_iteratively_converted_files=delete_iteratively_converted_files
+			)
+		else:
+			trans_fpaths_iter = trans_fpaths
+		
+		
 		for fpath, chunk in read.files_via_structured_array_chunk(
-				trans_fpaths,
+				trans_fpaths_iter,
 				dtype=self.trans_dtype,
 				delim=None,
 				chunk_size=chunk_size,
@@ -687,94 +707,188 @@ class ExomolDatasetHolder:
 		dt_end = dt.datetime.now()
 		_lgr.debug(f'Finished reading transitions at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
 	
+	
+	def iteratively_convert_files_to_fastest_format(
+			self,
+			trans_fpaths : Iterable[Path],
+			chunk_size : int = 1_000_000,
+			delete_iteratively_converted_files : None | bool = None,
+	) -> Generator[Path]:
+		"""
+		The fastest format is '.bin32', convert chain is '.trans.bz2' -> '.trans' -> '.trans.bin32'
+		"""
+		delete_iteratively_converted_files = self.delete_iteratively_converted_files if delete_iteratively_converted_files is None else delete_iteratively_converted_files
+		
+		for trans_fpath in trans_fpaths:
+			_lgr.info(f'ITERATIVELY CONVERTING {trans_fpath} to ".trans" format')
+			next_trans_fpath_1 = self.convert_single_transition_file_to_fmt(
+				trans_fpath,
+				fmt='.trans',
+				chunk_size=chunk_size,
+			)
+			
+			_lgr.info(f'ITERATIVELY CONVERTING {next_trans_fpath_1} to ".bin32" format')
+			next_trans_fpath_2 = self.convert_single_transition_file_to_fmt(
+				next_trans_fpath_1,
+				fmt='.bin32',
+				chunk_size=chunk_size,
+			)
+			
+			yield next_trans_fpath_2
+			
+			if delete_iteratively_converted_files:
+				print()
+				_lgr.info('DELETING ITERATIVELY CONVERTED FILES')
+				if next_trans_fpath_2.exists():
+					next_trans_fpath_2.unlink()
+				if next_trans_fpath_1.exists():
+					next_trans_fpath_1.unlink()
+				if trans_fpath.exists():
+					trans_fpath.unlink()
+		
+	
+	
+	
+	
 	def convert_transition_files_to_fmt(
 			self, 
-			fmt : Literal['.npy', '.bin', '.bin32'],
+			fmt : Literal['.trans', '.npy', '.bin', '.bin32'],
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
 	):
 		dt_start = dt.datetime.now()
-		_lgr.info(f'Starting to convert transition files at {dt_start}')		
+		_lgr.info(f'Starting to convert transition files at {dt_start}')
 		_lgr.info(f'Transition files have {self.trans_n_cols} columns.')
 		
 		old_trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=PKG_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
 		
 		for old_trans_fpath in old_trans_fpaths:
-		
-			new_trans_fpath = old_trans_fpath.with_name(old_trans_fpath.name + fmt) if old_trans_fpath.suffix == '.trans' else old_trans_fpath.with_suffix(fmt)
-			_lgr.info(f'Converting {old_trans_fpath.name=} to {new_trans_fpath.name}')
-			
-			if new_trans_fpath.exists():
-				_lgr.info('Converted file already exists, skipping...')
-				continue
-			
-			dt_split_1 = dt.datetime.now()
-			
-			try:
-				if fmt == '.bin':
-					with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
-						for trans_chunk in self.iter_transitions(
-								chunk_size=chunk_size,
-								trans_fpaths=[old_trans_fpath]
-						):
-							f.write(trans_chunk)
-				
-				elif fmt == '.bin32':
-					if old_trans_fpath.suffix == '.trans':
-						#run_main(Path(__file__).parent / "../c_experiments/convert_trans_to_bin32.so", old_trans_fpath, new_trans_fpath)
-						result = ConvertTransToBin32.run(old_trans_fpath, new_trans_fpath)
-						_lgr.info(f'File converted in {result.time_elapsed_sec:.2f} sec {result.bytes_sec/(1024*1024):.2f} MB/s {result.entries_sec*1E-6:.2f} Million Entries/s')
-					else:
-						
-						with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
-							new_chunk = np.empty((chunk_size,), dtype=self.trans32_dtype)
-							
-							for trans_chunk in self.iter_transitions(
-									chunk_size=chunk_size,
-									trans_fpaths=[old_trans_fpath]
-							):
-								# 32 bit floating point does not have enough exponent to represent the smallest line strength
-								# values. Therefore multiply by a factor to bring them into range. When reading, divide by that
-								# factor.
-								chunk_slice = tuple(slice(s) for s in trans_chunk.shape)
-								trans_chunk['einstein_A'] *= TRANS_STR_FLOAT32_FACTOR
-								
-								# Check that state ID numbers can fit into 32 bit unsigned integer
-								assert np.all(
-									(0 <= trans_chunk['lower_id']) 
-									& (trans_chunk['lower_id'] <= ((2**32) - 1))
-									& (0 <= trans_chunk['upper_id']) 
-									& (trans_chunk['upper_id'] <= ((2**32) - 1))
-								), f'State ID numbers must be within the range [0,{2**32-1}] to write to {fmt}'
-								
-								for name in trans_chunk.dtype.names:
-									new_chunk[name][chunk_slice] = trans_chunk[name]
-								
-								f.write(new_chunk)
-				
-				elif fmt == '.npy':
-					result = []
-					for trans_chunk in self.iter_transitions(
-							chunk_size=chunk_size,
-							trans_fpaths=[old_trans_fpath]
-					):
-							result.append(trans_chunk)
-					np.concatenate(result).save(new_trans_fpath)
-				else:
-					raise RuntimeError(f'Unknown format "{fmt}" to convert transition files to. ')
-			except:
-				# Remove the new file if anything goes wrong
-				if new_trans_fpath.exists():
-					new_trans_fpath.unlink()
-				raise
-			
-			dt_split_2 = dt.datetime.now()
-			
-			_lgr.info(f'Converted {old_trans_fpath.name=} to {new_trans_fpath.name}. Took {(dt_split_2-dt_split_1).total_seconds()} s.')
-			
+			self.convert_single_transition_file_to_fmt(old_trans_fpath, fmt = fmt, chunk_size = chunk_size)
 			
 		dt_end = dt.datetime.now()
 		_lgr.info(f'Finished converting transitions at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
+	
+	
+	def convert_single_transition_file_to_fmt(
+			self, 
+			old_trans_fpath : Path,
+			fmt : Literal['.trans', '.npy', '.bin', '.bin32'],
+			chunk_size : int = 1_000_000,
+	) -> Path:
+	
+		if fmt == '.trans': # actually maps to "empty" suffix
+			fmt_suffix = ''
+		else:
+			fmt_suffix = fmt
+		
+		if old_trans_fpath.suffix == '.trans':
+			new_trans_fpath = old_trans_fpath.with_name(old_trans_fpath.name + fmt_suffix)
+		else:
+			new_trans_fpath = old_trans_fpath.with_suffix(fmt_suffix)
+	
+		_lgr.info(f'Converting {old_trans_fpath.name=} to {new_trans_fpath.name}')
+		
+		if new_trans_fpath.exists():
+			_lgr.info('Converted file already exists, skipping...')
+			return new_trans_fpath
+		
+		dt_split_1 = dt.datetime.now()
+		
+		try:
+			if fmt == '.trans':
+				if not old_trans_fpath.name.endswith('.trans.bz2'):
+					raise RuntimeError("Cannot convert to '.trans' format as can only unzip a previously bzipped file into a '.trans' format file.")
+				
+				_lgr.info(f'Unzipping "{old_trans_fpath}"...\n')
+				finished_process = subprocess.run(
+					#f"bzip2 -kd {fpath}",
+					f"lbzip2 -kd {old_trans_fpath.absolute()}",
+					shell=True
+				)
+				
+				if finished_process.returncode == 0:
+					_lgr.info('Unzip successful\n')
+				else:
+					msg=f"## UNZIP PROCESS OUTPUT ##\n\n-- args --\n{finished_process.args}\n\n-- stdout --\n{finished_process.stdout}\n\n-- stderr --\n{finished_process.stderr}\n\n##----------------------##"
+					_lgr.debug(msg)
+					_lgr.info('Unzipping via shell failed, falling back on python implementation...')
+					with open(new_trans_fpath, 'wb') as f:
+						for trans_chunk in self.iter_transitions(
+								chunk_size=chunk_size,
+								trans_fpaths=[old_trans_fpath],
+								iteratively_convert_to_fastest_format = False,
+						):
+							for trans_entry in trans_chunk:
+								if self.trans_n_cols == 3:
+									f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']}\n")
+								elif self.trans_n_cols == 4:
+									f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']} {trans_entry['wavenumber']}\n")
+								else:
+									raise RuntimeError('Cannot read ".trans" file. ".trans" files must have 3 or 4 columns')
+					
+			elif fmt == '.bin':
+				with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
+					for trans_chunk in self.iter_transitions(
+							chunk_size=chunk_size,
+							trans_fpaths=[old_trans_fpath],
+							iteratively_convert_to_fastest_format = False,
+					):
+						f.write(trans_chunk)
+			
+			elif fmt == '.bin32':
+				if old_trans_fpath.suffix == '.trans':
+					result = ConvertTransToBin32.run(old_trans_fpath, new_trans_fpath)
+					_lgr.info(f'File converted in {result.time_elapsed_sec:.2f} sec {result.bytes_sec/(1024*1024):.2f} MB/s {result.entries_sec*1E-6:.2f} Million Entries/s')
+				
+				else:
+					with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
+						new_chunk = np.empty((chunk_size,), dtype=self.trans32_dtype)
+						
+						for trans_chunk in self.iter_transitions(
+								chunk_size=chunk_size,
+								trans_fpaths=[old_trans_fpath],
+								iteratively_convert_to_fastest_format = False,
+						):
+							# 32 bit floating point does not have enough exponent to represent the smallest line strength
+							# values. Therefore multiply by a factor to bring them into range. When reading, divide by that
+							# factor.
+							chunk_slice = tuple(slice(s) for s in trans_chunk.shape)
+							trans_chunk['einstein_A'] *= TRANS_STR_FLOAT32_FACTOR
+							
+							# Check that state ID numbers can fit into 32 bit unsigned integer
+							assert np.all(
+								(0 <= trans_chunk['lower_id']) 
+								& (trans_chunk['lower_id'] <= ((2**32) - 1))
+								& (0 <= trans_chunk['upper_id']) 
+								& (trans_chunk['upper_id'] <= ((2**32) - 1))
+							), f'State ID numbers must be within the range [0,{2**32-1}] to write to {fmt}'
+							
+							for name in trans_chunk.dtype.names:
+								new_chunk[name][chunk_slice] = trans_chunk[name]
+							
+							f.write(new_chunk)
+			
+			elif fmt == '.npy':
+				result = []
+				for trans_chunk in self.iter_transitions(
+						chunk_size=chunk_size,
+						trans_fpaths=[old_trans_fpath],
+						iteratively_convert_to_fastest_format = False,
+				):
+						result.append(trans_chunk)
+				np.concatenate(result).save(new_trans_fpath)
+			else:
+				raise RuntimeError(f'Unknown format "{fmt}" to convert transition files to. ')
+		except:
+			# Remove the new file if anything goes wrong
+			if new_trans_fpath.exists():
+				new_trans_fpath.unlink()
+			raise
+			return None
+		else:
+			dt_split_2 = dt.datetime.now()
+			_lgr.info(f'Converted {old_trans_fpath.name=} to {new_trans_fpath.name}. Took {(dt_split_2-dt_split_1).total_seconds()} s.')
+			return new_trans_fpath
 	
 	
 	def iter_transition_states(

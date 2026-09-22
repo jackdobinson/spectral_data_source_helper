@@ -360,7 +360,6 @@ def bin_file_into_structured_array_chunks(
 	chunk_size : int = 1_000_000,
 	dtype : None | np.dtype = None,
 	progress_tracker : None | BaseProgressTracker = None
-	
 ) -> Generator[np.ndarray]:
 
 	if fpath.suffix in ('.bz2',):
@@ -548,11 +547,6 @@ def files_via_structured_array_chunk(
 			raise RuntimeError(f'Unknown format to read "{ftype}"')
 
 
-			
-	
-	
-	
-	
 
 
 
