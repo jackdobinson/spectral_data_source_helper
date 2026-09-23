@@ -42,6 +42,8 @@ from .exomol_index_types import (
 	ExomolIsotopeDef,
 )
 
+from .args.iterative_conversion_options import IterativeConversionOptions
+
 import spectral_data_source_helper.calc.numba
 import spectral_data_source_helper.calc.numba.transition_states
 import spectral_data_source_helper.calc.numba.spec
@@ -50,14 +52,21 @@ import spectral_data_source_helper.calc.numba.broadening
 #BYTES_DTYPE = np.dtype(np.uint8)
 BYTES_DTYPE = np.dtype(np.uint64)
 
+TRANSITION_FILE_BASE_FMT = '.trans'
+COMPRESSION_FMTS : tuple[str,...] = ('.bz2', '.xz', '.zip', '.gz')
+
+
+
 
 @dc.dataclass
 class ExomolDatasetHolder:
 	d : ExomolDatasetInfo
 	
 	# public defaulted attributes
-	iteratively_convert_to_fastest_format : bool = False
-	delete_iteratively_converted_files : bool = True
+	iterative_conversion_opts : IterativeConversionOptions = dc.field(default_factory=IterativeConversionOptions)
+	#ensure_no_iterative_conversion : bool = False
+	#iteratively_convert_delete_files_after_use : bool = True
+	#iteratively_convert_compress_and_save_fastest_format : bool = True
 	
 	# private attributes
 	_api_linelist_urls : None | tuple[str,...] = None
@@ -235,8 +244,8 @@ class ExomolDatasetHolder:
 	def trans_n_cols(self) -> int:
 		if self._trans_n_cols is None:
 			#print('### GETTING TRANS N COLS ### ')
-
-			trans_fpath = self.trans_file_precidence(fetch.file_from_cache(f'https://www.{self.api_transition_urls[0]}',cache=PKG_CACHE,return_fpath=True))
+			
+			trans_fpath = next(self.get_trans_files_by_precidence_from_url(slice(0,1), cache=PKG_CACHE))
 			
 			#print(f'{trans_fpath=}')
 			
@@ -624,22 +633,20 @@ class ExomolDatasetHolder:
 		if isinstance(fpath, str):
 			fpath = Path(fpath)
 		
-		if fpath.suffix == '.bz2':
-			trans_fpath = fpath
-		else:
-			trans_fpath = fpath.with_name(fpath.name+'.bz2')
+		
+		trans_fpath = self.get_base_transition_file_path(fpath) # ".../file.trans" version of path
 		
 		# Paths at the top will be chosen first
 		possible_fpaths = (
-			trans_fpath.with_suffix('.bin32'),
-			trans_fpath.with_suffix('.bin'),
-			trans_fpath.with_suffix('.npy'),
-			trans_fpath.with_suffix('.npz'),
-			trans_fpath.with_suffix('.bin32.xz'), # faster and more space efficient than `.bz2`
-			trans_fpath.with_suffix('.bin32.bz2'),
-			trans_fpath.with_suffix('.bin.bz2'),
-			trans_fpath.with_suffix(''),
-			trans_fpath.with_suffix('.bz2'),
+			trans_fpath.with_suffix('.trans.bin32'),
+			trans_fpath.with_suffix('.trans.bin'),
+			trans_fpath.with_suffix('.trans.npy'),
+			trans_fpath.with_suffix('.trans.npz'),
+			trans_fpath.with_suffix('.trans.bin32.xz'), # faster and more space efficient than `.bz2`
+			trans_fpath.with_suffix('.trans.bin32.bz2'),
+			trans_fpath.with_suffix('.trans.bin.bz2'),
+			trans_fpath,
+			trans_fpath.with_suffix('.trans.bz2'),
 		)
 		
 		_lgr.debug(f'{trans_fpath=}')
@@ -662,32 +669,51 @@ class ExomolDatasetHolder:
 				
 				return new_fpath
 			_lgr.debug('DOES NOT EXIST')
+		
+		# Fall back to using the path we were given, or return `None` if does not exist
+		if fpath.exists():
+			return fpath
+		else:
+			return None
 			
+	
+	def get_trans_files_by_precidence_from_url(
+			self,
+			trans_files_slice : slice = slice(None),
+			cache = PKG_CACHE,
+	) -> Generator[Path]:
+		for api_trans_url in self.api_transition_urls[trans_files_slice]:
+		
+			site_dir, fpath = api_trans_url.split('/',1)
+			cache_fpath = Path(cache) / Path(site_dir) / fpath
+			best_fpath = self.trans_file_precidence(cache_fpath)
+			
+			if best_fpath is None: # no path exists yet, so perform download
+				best_fpath = fetch.file_from_cache(f'https://www.{api_trans_url}',cache=cache, return_fpath=True)
+			
+			yield best_fpath
 	
 	def iter_transitions(
 			self,
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
 			trans_fpaths : None | Iterable[Path] = None, # If present iterate over these files, otherwise iterate over all of them
-			iteratively_convert_to_fastest_format : None | bool = None,
-			delete_iteratively_converted_files : None | bool = None,
+			ensure_no_iterative_conversion : bool = False,
 	) -> Generator[np.ndarray]:
-	
-		iteratively_convert_to_fastest_format = self.iteratively_convert_to_fastest_format if iteratively_convert_to_fastest_format is None else iteratively_convert_to_fastest_format
-		delete_iteratively_converted_files = self.delete_iteratively_converted_files if delete_iteratively_converted_files is None else delete_iteratively_converted_files
 		
 		dt_start = dt.datetime.now()
-		_lgr.debug(f'Starting reading transitions at {dt_start}')		
+		_lgr.debug(f'Starting reading transitions at {dt_start}')
 		_lgr.debug(f'Transition files have {self.trans_n_cols} columns.')
 		
 		if trans_fpaths is None:
-			trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=PKG_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
-		
-		if iteratively_convert_to_fastest_format:
+			#trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=PKG_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
+			trans_fpaths = self.get_trans_files_by_precidence_from_url(trans_files_slice, cache=PKG_CACHE)
+		_lgr.info(f'{ensure_no_iterative_conversion=}')
+		_lgr.info(f'{self.iterative_conversion_opts=}')
+		if (not ensure_no_iterative_conversion) and self.iterative_conversion_opts.enabled:
 			trans_fpaths_iter = self.iteratively_convert_files_to_fastest_format(
 				trans_fpaths, 
-				chunk_size=chunk_size, 
-				delete_iteratively_converted_files=delete_iteratively_converted_files
+				chunk_size=chunk_size,
 			)
 		else:
 			trans_fpaths_iter = trans_fpaths
@@ -700,51 +726,76 @@ class ExomolDatasetHolder:
 				chunk_size=chunk_size,
 				yield_fpath = True,
 		):
-			if fpath.name.endswith('.bin32') or fpath.name.endswith('.bin32.bz2'):
+			if self.get_transition_file_path_fmt_and_compression_str(fpath).startswith('.bin32'):
 				chunk['einstein_A'] /= TRANS_STR_FLOAT32_FACTOR
 			yield chunk
 		
 		dt_end = dt.datetime.now()
 		_lgr.debug(f'Finished reading transitions at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
-	
+
 	
 	def iteratively_convert_files_to_fastest_format(
 			self,
 			trans_fpaths : Iterable[Path],
 			chunk_size : int = 1_000_000,
-			delete_iteratively_converted_files : None | bool = None,
 	) -> Generator[Path]:
 		"""
 		The fastest format is '.bin32', convert chain is '.trans.bz2' -> '.trans' -> '.trans.bin32'
 		"""
-		delete_iteratively_converted_files = self.delete_iteratively_converted_files if delete_iteratively_converted_files is None else delete_iteratively_converted_files
-		
+	
 		for trans_fpath in trans_fpaths:
-			_lgr.info(f'ITERATIVELY CONVERTING {trans_fpath} to ".trans" format')
-			next_trans_fpath_1 = self.convert_single_transition_file_to_fmt(
-				trans_fpath,
-				fmt='.trans',
-				chunk_size=chunk_size,
-			)
+		
+			trans_fpath_fmt, trans_fpath_comp = self.get_transition_file_path_fmt_and_compression(trans_fpath)
 			
-			_lgr.info(f'ITERATIVELY CONVERTING {next_trans_fpath_1} to ".bin32" format')
-			next_trans_fpath_2 = self.convert_single_transition_file_to_fmt(
-				next_trans_fpath_1,
-				fmt='.bin32',
-				chunk_size=chunk_size,
-			)
+			conversion_chain_index = -1
+			if trans_fpath_fmt in self.iterative_conversion_opts.conversion_chain:
+				conversion_chain_index = self.iterative_conversion_opts.conversion_chain.index(trans_fpath_fmt)
 			
-			yield next_trans_fpath_2
+			current_trans_fpath = trans_fpath
+			next_conversion_chain_index = conversion_chain_index + (1 if trans_fpath_comp is None else 0)
+			next_trans_fpaths = []
+			for next_conversion_fmt in self.iterative_conversion_opts.conversion_chain[next_conversion_chain_index:]:
+				_lgr.info(f'ITERATIVELY CONVERTING {current_trans_fpath.name} to "{next_conversion_fmt}" format')
+				next_trans_fpaths.append(
+					self.convert_single_transition_file_to_fmt(
+						current_trans_fpath,
+						fmt=next_conversion_fmt,
+						chunk_size=chunk_size,
+					)
+				)
+				current_trans_fpath = next_trans_fpaths[-1]
 			
-			if delete_iteratively_converted_files:
-				print()
-				_lgr.info('DELETING ITERATIVELY CONVERTED FILES')
-				if next_trans_fpath_2.exists():
-					next_trans_fpath_2.unlink()
-				if next_trans_fpath_1.exists():
-					next_trans_fpath_1.unlink()
-				if trans_fpath.exists():
-					trans_fpath.unlink()
+			if self.iterative_conversion_opts.compress_and_save_fastest_format and ((current_trans_fpath.suffix != trans_fpath_fmt) or (self.iterative_conversion_opts.compression_fmt != trans_fpath_comp)):
+				try:
+					self.convert_single_transition_file_to_fmt(
+						current_trans_fpath,
+						fmt=self.iterative_conversion_opts.compression_fmt,
+						chunk_size=chunk_size,
+					)
+				except Exception as e: # catch any errors, this is a nice to have not a requirement
+					_lgr.warn(f'Could not compress and save "{current_trans_fpath.name}" using compression format "{self.iterative_conversion_opts.compression_fmt}". Error: {e}')
+			
+			yield current_trans_fpath
+			
+			if self.iterative_conversion_opts.delete_intermediate_files_after_use:
+				# delete intermediate converted files
+				for iter_conv_trans_fpath in next_trans_fpaths[:-1]:
+					_lgr.info(f'Deleting iteratively converted file "{iter_conv_trans_fpath.name}"')
+					if iter_conv_trans_fpath.exists():
+						iter_conv_trans_fpath.unlink()
+				
+				# delete all downloaded files
+				base_trans_fpath = trans_fpath.with_name(trans_fpath.name[:-len(''.join(trans_fpath.suffixes))])
+				for endings in EXOMOL_TRANSITION_FILE_ENDINGS:
+					downloaded_trans_fpath = base_trans_fpath.with_name(base_trans_fpath.name+endings)
+					if downloaded_trans_fpath.exists():
+						_lgr.info(f'Deleting downloaded file "{downloaded_trans_fpath.name}"')
+						downloaded_trans_fpath.unlink()
+			
+			if self.iterative_conversion_opts.delete_final_files_after_use:
+				_lgr.info(f'Deleting iteratively final converted file "{next_trans_fpaths[:-1].name}"')
+				if next_trans_fpaths[:-1].exists():
+					next_trans_fpaths[:-1].unlink()
 		
 	
 	
@@ -769,69 +820,216 @@ class ExomolDatasetHolder:
 		_lgr.info(f'Finished converting transitions at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
 	
 	
+	
+	def convert_single_transition_file_to_fmt_via_system_utilities(
+			self, 
+			old_trans_fpath : Path,
+			new_trans_fpath : Path,
+			fmt : Literal['.trans', '.npy', '.bin', '.bin32', '.bz2', '.xz'],
+	) -> bool: # Return value indicates if conversion succeeded
+		
+		
+		
+		any_system_convert_successful = False
+		
+		
+		
+		# Old format and the commands that convert it to the new format
+		conversion_commands_map = {
+			f'{fmt}.bz2' : { # old format
+				f'{fmt}' : ( # new format
+					f'command -v lbzip2 >/dev/null 2>&1 && lbzip2 -kd {old_trans_fpath.absolute()}', # candidate conversion command 1
+					f'command -v bzip2 >/dev/null 2>&1 && bzip2 -kd {old_trans_fpath.absolute()}', # candidate conversion command 2
+				),
+			},
+			
+			f'{fmt}.xz' : {
+				f'{fmt}' : (
+					f'command -v xz >/dev/null 2>&1 && xz -kd {old_trans_fpath.absolute()}',
+				),
+			},
+			
+			f'{fmt}.gz' : {
+				f'{fmt}' : (
+					f'command -v gzip >/dev/null 2>&1 && gzip -kd {old_trans_fpath.absolute()}',
+				),
+			},
+			
+			f'{fmt}.zip' : {
+				f'{fmt}' : (
+					f'command -v unzip >/dev/null 2>&1 && unzip {old_trans_fpath.absolute()}',
+				),
+			},
+		}
+		
+		
+		old_fmt, old_compression = self.get_transition_file_path_fmt_and_compression(old_trans_fpath)
+		
+		if old_compression is not None:
+			old_fmt = old_fmt+old_compression
+		else:
+			conversion_commands_map[old_fmt] = { # old format
+				'.bz2' : ( # new format
+					f'command -v lbzip2 >/dev/null 2>&1 && lbzip2 -k {old_trans_fpath.absolute()}', # candidate conversion command 1
+					f'command -v bzip2 >/dev/null 2>&1 && bzip2 -k {old_trans_fpath.absolute()}', # candidate conversion command 2
+				),
+			
+				'.xz' : (
+					f'command -v xz >/dev/null 2>&1 && xz -k {old_trans_fpath.absolute()}',
+				),
+			
+				'.gz' : (
+					f'command -v gzip >/dev/null 2>&1 && gzip -k {old_trans_fpath.absolute()}',
+				),
+			
+				'.zip' : (
+					f'command -v zip >/dev/null 2>&1 && zip {old_trans_fpath.absolute()}',
+				),
+			}
+		
+		_lgr.info(f'{old_fmt=}')
+		
+		new_fmt_system_commands_map = conversion_commands_map.get(old_fmt, None)
+		
+		if new_fmt_system_commands_map is None:
+			_lgr.info(f'No method to convert from format "{old_fmt}" to "{fmt}" via system commands, no entry for old format')
+			return False
+		
+		conversion_system_commands = new_fmt_system_commands_map.get(fmt, None)
+		if conversion_system_commands is None:
+			_lgr.info(f'No method to convert from format "{old_fmt}" to "{fmt}" via system commands, no entry for new format')
+			return False
+		
+		for conversion_command in conversion_system_commands:
+			finished_process = subprocess.run(
+				conversion_command,
+				shell=True
+			)
+			if finished_process.returncode == 0:
+				any_system_convert_successful = True
+				break
+		
+		if any_system_convert_successful:
+			_lgr.info(f'Conversion from "{old_fmt}" to "{fmt}" via system commands completed successfully')
+			if not new_trans_fpath.exists():
+				msg = f'Conversion from "{old_fmt}" to "{fmt}" via system commands completed successfully, but expected file "{new_trans_fpath}" does was not created and does not exist'
+				_lgr.error(msg)
+				raise FileNotFoundError(msg)
+		else:
+			_lgr.info(f'Conversion from "{old_fmt}" to "{fmt}" via system commands failed')
+		
+		return any_system_convert_successful
+	
+	
+	@staticmethod
+	def get_transition_file_path_fmt_and_compression_str(
+			old_trans_fpath,
+	) -> str:
+		fmt, comp = ExomolDatasetHolder.get_transition_file_path_fmt_and_compression(old_trans_fpath)
+		if comp is None:
+			return fmt
+		else:
+			return fmt+comp
+	
+	@staticmethod
+	def get_transition_file_path_fmt_and_compression(
+			old_trans_fpath,
+	) -> tuple[str,None|str]:
+		fmts = old_trans_fpath.suffixes
+		assert fmts[0] == TRANSITION_FILE_BASE_FMT, "Transition base format must be first format in list"
+		
+		if len(fmts) == 1:
+			return (TRANSITION_FILE_BASE_FMT, None)
+		
+		elif len(fmts) == 2:
+			if fmts[1] in COMPRESSION_FMTS:
+				return (fmts[0], fmts[1])
+			else:
+				return (fmts[1], None)
+		elif len(fmts) == 3:
+			assert (fmts[1] not in COMPRESSION_FMTS) and (fmts[2] in COMPRESSION_FMTS), "Three suffixes mean 2nd one must be the data format, third must be compression"
+			return (fmts[1], fmts[2])
+		else:
+			raise RuntimeError(f'Unknown suffix layout for transition file "{old_trans_fpath.name}"')
+	
+	@staticmethod
+	def get_transition_file_path_with_fmt(
+			old_trans_fpath,
+			fmt : Literal['.trans', '.npy', '.bin', '.bin32', '.xz', '.bz2'],
+	) -> Path:
+	
+		if old_trans_fpath.suffix == fmt:
+			return Path(old_trans_fpath)
+		
+		if fmt in COMPRESSION_FMTS:
+			return old_trans_fpath.with_name(old_trans_fpath.name+fmt)
+	
+		old_trans_fpath_base = ExomolDatasetHolder.get_base_transition_file_path(old_trans_fpath)
+		
+		if fmt == TRANSITION_FILE_BASE_FMT:
+			return old_trans_fpath_base
+		
+		return old_trans_fpath_base.with_name(old_trans_fpath_base.name + fmt)
+	
+	@staticmethod
+	def get_decompressed_transition_file_path(
+			old_trans_fpath,
+	) -> Path:
+		if old_trans_fpath.suffix in COMPRESSION_FMTS:
+			return old_trans_fpath.with_suffix('')
+		else:
+			return Path(old_trans_fpath)
+	
+	@staticmethod
+	def get_base_transition_file_path(
+			old_trans_fpath,
+	) -> Path:
+		return old_trans_fpath.with_name(old_trans_fpath.name[:-len(''.join(old_trans_fpath.suffixes))] + TRANSITION_FILE_BASE_FMT)
+	
 	def convert_single_transition_file_to_fmt(
 			self, 
 			old_trans_fpath : Path,
-			fmt : Literal['.trans', '.npy', '.bin', '.bin32'],
+			fmt : Literal['.trans', '.npy', '.bin', '.bin32', '.xz', '.bz2'],
 			chunk_size : int = 1_000_000,
 	) -> Path:
 	
-		if fmt == '.trans': # actually maps to "empty" suffix
-			fmt_suffix = ''
-		else:
-			fmt_suffix = fmt
-		
-		if old_trans_fpath.suffix == '.trans':
-			new_trans_fpath = old_trans_fpath.with_name(old_trans_fpath.name + fmt_suffix)
-		else:
-			new_trans_fpath = old_trans_fpath.with_suffix(fmt_suffix)
+		new_trans_fpath = self.get_transition_file_path_with_fmt(old_trans_fpath, fmt)
 	
 		_lgr.info(f'Converting {old_trans_fpath.name=} to {new_trans_fpath.name}')
 		
 		if new_trans_fpath.exists():
-			_lgr.info('Converted file already exists, skipping...')
+			_lgr.info(f'Converted file "{new_trans_fpath.name}" already exists, skipping...')
 			return new_trans_fpath
 		
 		dt_split_1 = dt.datetime.now()
 		
 		try:
-			if fmt == '.trans':
-				if not old_trans_fpath.name.endswith('.trans.bz2'):
-					raise RuntimeError("Cannot convert to '.trans' format as can only unzip a previously bzipped file into a '.trans' format file.")
-				
-				_lgr.info(f'Unzipping "{old_trans_fpath}"...\n')
-				finished_process = subprocess.run(
-					#f"bzip2 -kd {fpath}",
-					f"lbzip2 -kd {old_trans_fpath.absolute()}",
-					shell=True
-				)
-				
-				if finished_process.returncode == 0:
-					_lgr.info('Unzip successful\n')
-				else:
-					msg=f"## UNZIP PROCESS OUTPUT ##\n\n-- args --\n{finished_process.args}\n\n-- stdout --\n{finished_process.stdout}\n\n-- stderr --\n{finished_process.stderr}\n\n##----------------------##"
-					_lgr.debug(msg)
-					_lgr.info('Unzipping via shell failed, falling back on python implementation...')
-					with open(new_trans_fpath, 'wb') as f:
-						for trans_chunk in self.iter_transitions(
-								chunk_size=chunk_size,
-								trans_fpaths=[old_trans_fpath],
-								iteratively_convert_to_fastest_format = False,
-						):
-							for trans_entry in trans_chunk:
-								if self.trans_n_cols == 3:
-									f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']}\n")
-								elif self.trans_n_cols == 4:
-									f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']} {trans_entry['wavenumber']}\n")
-								else:
-									raise RuntimeError('Cannot read ".trans" file. ".trans" files must have 3 or 4 columns')
+			# First, try using system utilities to decompress
+			if self.convert_single_transition_file_to_fmt_via_system_utilities(old_trans_fpath, new_trans_fpath, fmt):
+				pass
+			
+			# Then try all other methods
+			elif fmt == '.trans':
+				with open(new_trans_fpath, 'w') as f:
+					for trans_chunk in self.iter_transitions(
+							chunk_size=chunk_size,
+							trans_fpaths=[old_trans_fpath],
+							ensure_no_iterative_conversion = True,
+					):
+						for trans_entry in trans_chunk:
+							if self.trans_n_cols == 3:
+								f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']}\n")
+							elif self.trans_n_cols == 4:
+								f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']} {trans_entry['wavenumber']}\n")
+							else:
+								raise RuntimeError('Cannot read ".trans" file. ".trans" files must have 3 or 4 columns')
 					
 			elif fmt == '.bin':
 				with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
 					for trans_chunk in self.iter_transitions(
 							chunk_size=chunk_size,
 							trans_fpaths=[old_trans_fpath],
-							iteratively_convert_to_fastest_format = False,
+							ensure_no_iterative_conversion = True,
 					):
 						f.write(trans_chunk)
 			
@@ -847,7 +1045,7 @@ class ExomolDatasetHolder:
 						for trans_chunk in self.iter_transitions(
 								chunk_size=chunk_size,
 								trans_fpaths=[old_trans_fpath],
-								iteratively_convert_to_fastest_format = False,
+								ensure_no_iterative_conversion = True,
 						):
 							# 32 bit floating point does not have enough exponent to represent the smallest line strength
 							# values. Therefore multiply by a factor to bring them into range. When reading, divide by that
@@ -873,12 +1071,12 @@ class ExomolDatasetHolder:
 				for trans_chunk in self.iter_transitions(
 						chunk_size=chunk_size,
 						trans_fpaths=[old_trans_fpath],
-						iteratively_convert_to_fastest_format = False,
+						ensure_no_iterative_conversion = True,
 				):
 						result.append(trans_chunk)
 				np.concatenate(result).save(new_trans_fpath)
 			else:
-				raise RuntimeError(f'Unknown format "{fmt}" to convert transition files to. ')
+				raise RuntimeError(f'Cannot convert transition file "{old_trans_fpath.name}" to format "{fmt}" via system utilities or python methods.')
 		except:
 			# Remove the new file if anything goes wrong
 			if new_trans_fpath.exists():
@@ -889,6 +1087,7 @@ class ExomolDatasetHolder:
 			dt_split_2 = dt.datetime.now()
 			_lgr.info(f'Converted {old_trans_fpath.name=} to {new_trans_fpath.name}. Took {(dt_split_2-dt_split_1).total_seconds()} s.')
 			return new_trans_fpath
+	
 	
 	
 	def iter_transition_states(
@@ -1301,7 +1500,7 @@ class ExomolDatasetHolder:
 			
 			np.subtract(n_weak_lines, n_weak_lines_in_continuum, out=n_weak_lines_outside_continuum)
 			
-			_lgr.info(f'{n_weak_lines_in_continuum=} {n_weak_lines_outside_continuum=}')
+			_lgr.debug(f'{n_weak_lines_in_continuum=} {n_weak_lines_outside_continuum=}')
 			
 			
 			spectral_data_source_helper.calc.numba.spec.accumulate_pseudocontinuum(
@@ -1321,7 +1520,7 @@ class ExomolDatasetHolder:
 				(line_data_chunk[strong_line_mask_part[j]] for j in range(n_temps)), 
 				pseudo_continuum_contribution
 			)
-			_lgr.info('strong lines and continuum data outputted')
+			_lgr.debug('strong lines and continuum data outputted')
 			
 				
 			

@@ -23,8 +23,17 @@ from .cfg.const import (
 	T_ref,
 	P_ref,
 )
-from .exomol_dataset_holder import ExomolDatasetHolder
-from .args.dataset_selector import DatasetSelector, select_datasets
+from .exomol_dataset_holder import (
+	ExomolDatasetHolder
+)
+from .args.dataset_selector import (
+	DatasetSelector, 
+	select_datasets
+)
+
+from .args.iterative_conversion_options import (
+	IterativeConversionOptions
+)
 
 
 
@@ -271,7 +280,7 @@ def action_calc_continuum(
 		continuum_bin_spacing : Literal['lin', 'log'] = 'lin',
 		chunk_size : int = CHUNK_SIZE,
 ):
-	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	#pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	progress_lgr.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
 	temperature_arr = np.array(temperature, dtype=float)
@@ -594,8 +603,8 @@ if __name__=='__main__':
 	parser = ap.ArgumentParser()
 	
 	parser.add_argument('-d', '--dataset_selector', action='extend', type=DatasetSelector, metavar='<Dataset Selector>', help='String that selects dataset to operate upon. Format: "<mol>/<iso>/<dataset_name>", "*" can be used as a wild card', default=None)
-	parser.add_argument('-C', '--iteratively_convert', action='store_true', help='If present, will iteratively convert files to the fastest format and delete the files as they are finished with', default=False)
-	parser.add_argument('--keep_iteratively_converted', action='store_true', help='If present, will keep iteratively converted files', default=False)
+
+	IterativeConversionOptions.add_argument_group(parser)
 	
 	subparsers = parser.add_subparsers(required=True)
 	
@@ -662,6 +671,8 @@ if __name__=='__main__':
 	args = parser.parse_args(sys.argv[1:])
 	arg_dict = vars(args)
 	
+	iterative_conversion_options_template = IterativeConversionOptions.from_args(arg_dict)
+	
 	
 	dataset_selectors = arg_dict.pop('dataset_selector')
 	#print(f'{dataset_selectors=}')
@@ -671,8 +682,7 @@ if __name__=='__main__':
 		dataset_holders.extend([ExomolDatasetHolder(x) for x in select_datasets([dss_mol], [dss_iso], [dss_name])])
 	
 	for dataset_holder in dataset_holders:
-		dataset_holder.iteratively_convert_to_fastest_format = arg_dict.pop("iteratively_convert", False)
-		dataset_holder.delete_iteratively_converted_files = (not arg_dict.pop("keep_iteratively_converted", False))
+		dataset_holder.iterative_conversion_opts = iterative_conversion_options_template.copy()
 	
 	# Deal with any arguments that should have default values but
 	# are not playing nice.
