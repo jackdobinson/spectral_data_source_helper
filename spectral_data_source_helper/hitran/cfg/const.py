@@ -25,5 +25,5 @@ HITRAN_BAD_BROADENER_LINE_STARTS : dict[int,str] = { # global id : tuple of bad 
 
 HITRAN_T_ref         : float    = 296.0                                          # K                    HITRAN Reference temperature (Kelvin)
 HITRAN_P_ref         : float    = 1.0                                            # atm                  HITRAN Reference pressure (atm)
-T_ref                : float    = HITRAN_T_ref/GLOBAL_T_ref                      # K                    Reference temperature (Kelvin)
+T_ref                : float    = HITRAN_T_ref                                   # K                    Reference temperature (Kelvin)
 P_ref                : float    = HITRAN_P_ref/GLOBAL_P_ref                      # atm                  Reference pressure (atm)

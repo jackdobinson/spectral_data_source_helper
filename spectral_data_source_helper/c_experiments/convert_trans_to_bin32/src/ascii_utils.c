@@ -87,33 +87,54 @@ size_t ascii_read_float32_fast_offset(char const* p, float * const x, const int1
 		errno = EDOM; // domain invaid (i.e. cannot convert to float)
 		return (p-p0);
 	}
+	//printf("ascii_read_float32_fast_offset :: mantissa_sign %d mantissa %d exp_10 %d\n", mantissa_sign, mantissa, exp_10);
 	
 	if ((mantissa & 0xFFFFFFFFu) == 0){ // If value is identically zero (e.g. 0.00000E12)
 		(*x) = XX__ascii_assemble_float32(mantissa_sign, (uint32_t)(0x00000000u), (uint8_t)(0x00)); // S 00000000 00000000000000000000000 is +/- zero (S - Sign)
 		return (p-p0);
 	}
 	
-	
 	exp_10 += exp_10_offset; // Add exponent offset here, used to fit very large or small numbers into float32 representation
 	
+	//printf("ascii_read_float32_fast_offset ::exp_10 %d\n", exp_10);
+	
+	
 	XX__ascii_exp_10_to_exp_2(exp_10, &exp_2, &exp_factor);
+	//printf("ascii_read_float32_fast_offset :: exp_2 %d exp_factor %lu\n", exp_2, exp_factor);
+	
 	exp_2 += binary_shift_rhs_zeros_uint32(&mantissa); // put any remaining factors of 2 into `exp_2`
-
+	//printf("ascii_read_float32_fast_offset :: exp_2 %d mantissa %u\n", exp_2, mantissa);
+	
 	mantissa_extended = mantissa;
+	//printf("ascii_read_float32_fast_offset :: mantissa_extended %lu\n", mantissa_extended);
 	mantissa_extended *= exp_factor;
+	//printf("ascii_read_float32_fast_offset :: mantissa_extended %lu\n", mantissa_extended);
 	exp_2 += binary_shift_uint64_to_uint32(&mantissa_extended);
+	//printf("ascii_read_float32_fast_offset :: mantissa_extended %lu exp_2 %d\n", mantissa_extended, exp_2);
 	mantissa = mantissa_extended;
 	exp_2 += 31;
+	//printf("ascii_read_float32_fast_offset :: exp_2 %d mantissa %u\n", exp_2, mantissa);
 	mantissa <<= 1;
 	
-	exp_2 += 127; // zero-point of float32 exponent is 127
 	
-	if (exp_2 > 127) {
+	exp_2 += 127; // zero-point of float32 exponent is 127
+	//printf("ascii_read_float32_fast_offset :: exp_2 %d mantissa %u\n", exp_2, mantissa);
+	
+	if (exp_2 > 255) {
+		//printf("ascii_read_float32_fast_offset :: mantissa_sign %d mantissa %u exp_10 %d exp_2 %d mantissa_extended %lu\n", mantissa_sign, mantissa, exp_10, exp_2, mantissa_extended);
 		(*x) = XX__ascii_assemble_float32(mantissa_sign, (uint32_t)(0x00000000u), (uint8_t)(0xFF)); // S 11111111 00000000000000000000000 is +/- infinity (S - Sign)
+		//errno = EDOM; // domain invaid (i.e. cannot convert to float)
 		return (p-p0);
 	}
+	else if (exp_2 < 0){
+		exp_2 = 0;
+	}
 	
-	(*x) = XX__ascii_assemble_float32(mantissa_sign, mantissa, (uint8_t)(exp_2+127));
+	(*x) = XX__ascii_assemble_float32(mantissa_sign, mantissa, (uint8_t)(exp_2));
+	
+	//printf("ascii_read_float32_fast_offset :: x %E\n", *x);
+	
+	//exit(1);
 	return (p-p0);
 }
 
@@ -400,8 +421,6 @@ bool ascii_consume_decimal_as_uint32(char const ** const p, uint32_t * const x, 
 	return result;
 }
 
-
-
 bool ascii_consume_sci_notation_by_parts(char const ** const p, int8_t *const sign, uint32_t * const x, int16_t * const exp_10){
 	bool result=true;
 	int16_t decimal_exp_10 = 0;
@@ -425,8 +444,6 @@ bool ascii_consume_sci_notation_by_parts(char const ** const p, int8_t *const si
 	
 	return result;
 }
-
-
 
 float XX__ascii_assemble_float32(const int8_t sign, const uint32_t mantissa, const uint8_t exp_2){
 	// sign - Sign of float (-1 or +1)
@@ -463,7 +480,6 @@ float XX__ascii_assemble_float32(const int8_t sign, const uint32_t mantissa, con
 	//printf("DEBUG :: assemble_float :: float_mask 0x%08X float %E\n", float_mask.u32, float_mask.f32);
 	return float_mask.f32;
 }
-
 
 void XX__ascii_exp_10_to_exp_2(int16_t exp_10, int16_t * const exp_2, uint64_t * const factor){
 	

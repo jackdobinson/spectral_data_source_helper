@@ -30,5 +30,5 @@ EXOMOL_TRANSITION_FILE_ENDINGS = (
 # Reference temperature and pressure defined in the [pressure broadening diet](https://doi.org/10.1016/j.jqsrt.2017.01.028) paper.
 EXOMOL_T_ref         : float    = 296.0                                          # K                    Exomol Reference temperature (Kelvin)
 EXOMOL_P_ref         : float    = 0.986923                                       # atm                  Exomol Reference pressure (atm)
-T_ref                : float    = EXOMOL_T_ref/GLOBAL_T_ref                      # K                    Reference temperature (Kelvin)
+T_ref                : float    = EXOMOL_T_ref                                   # K                    Reference temperature (Kelvin)
 P_ref                : float    = EXOMOL_P_ref/GLOBAL_P_ref                      # atm                  Reference pressure (atm)

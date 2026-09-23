@@ -97,7 +97,6 @@ def pseudo_continuum(
 		n_neighbour_bins : int = 3, # number of bins around center to calculate line-spilling for
 		
 		lineshape_id : int = LINESHAPE_ID_VOIGT, # ID number of the lineshape to use
-		
 ):
 	#print('pseudo_continuum(...):', flush=True)
 	if lineshape_id == LINESHAPE_ID_VOIGT:
@@ -158,7 +157,7 @@ def pseudo_continuum(
 		
 		# add absorption from lines accounting for spillage into neighbouring bins
 		for i in range(out.shape[1]):
-			lineshape_sum = 0
+			lineshape_sum = 0.0
 			for delta_k in range(-n_neighbour_bins, n_neighbour_bins+1):
 				k = n_neighbour_bins + delta_k
 				ii = i + delta_k
@@ -172,13 +171,13 @@ def pseudo_continuum(
 						)
 					lineshape_sum += store_y[k]
 				else:
-					store_y[k] = 0
+					store_y[k] = 0.0
 				
 				
 			for delta_k in range(-n_neighbour_bins, n_neighbour_bins+1):
 				k = n_neighbour_bins + delta_k
 				ii = i + delta_k
-				if 0 <= ii and ii < out.shape[1]:
+				if (0 <= ii) and (ii < out.shape[1]) and (lineshape_sum != 0.0):
 					out[j,ii] += store_x[2,i] * store_y[k] / lineshape_sum
 		
 		spectral_data_source_helper.calc.numba.divide(
@@ -225,6 +224,18 @@ def boltzmann_population_v(
 	for i in prange(lower_state_energy.shape[0]):
 		for j in range(temp.shape[0]):
 			out[j,i] = np.exp(-lower_state_energy[i]*c2_cgs/temp[j])
+
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
+def boltzmann_population_ratio_v(
+		lower_state_energy : np.ndarray,
+		temp : np.ndarray,
+		t_ref : float,
+		out : np.ndarray,
+):
+	# exp(- c2 * Epp / T_i) / exp(- c2 * Epp / T_ref) = exp(- c2 * Epp / T_i + c2*Epp / T_ref) = exp(- c2 * Epp (1/T_i - 1/T_ref))
+	for i in prange(lower_state_energy.shape[0]):
+		for j in range(temp.shape[0]):
+			out[j,i] = np.exp(-lower_state_energy[i]*c2_cgs*(1.0/temp[j] - 1.0/t_ref))
 
 @njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def spec_line_intensity_lte_f(

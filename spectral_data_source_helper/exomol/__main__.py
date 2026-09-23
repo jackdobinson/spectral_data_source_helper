@@ -129,7 +129,7 @@ def action_trans(
 ):
 	import spectral_data_source_helper.cfg.log # for later
 	
-	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	#pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
 	for ds_holder in dataset_holders:
 		print(f'Transitions for dataset {ds_holder.short_info_str}')
@@ -148,6 +148,14 @@ def action_trans(
 		for afile in ds_holder.api_transition_urls:
 			print(f'        {afile}')
 		
+		
+		afile = next(ds_holder.get_trans_files_by_precidence_from_url(slice(0,1)))
+		if afile.name.endswith('.bin32'):
+			print(f'    Transition data example "{afile}"')
+			with spectral_data_source_helper.utils.structured_array.StructuredArrayFile(afile,'rb') as f:
+				transition_data = f.read()
+				print(f'{transition_data=}')
+		
 		print('    Transition reading speed check:')
 		spectral_data_source_helper.cfg.log.progress_stream_hdlr.terminator='\n'
 		
@@ -155,7 +163,8 @@ def action_trans(
 		dt_start = dt.datetime.now()
 		for j, transition_chunk in enumerate(ds_holder.iter_transitions(chunk_size=chunk_size)):
 			dt_split = dt.datetime.now()
-			if (dt_split - dt_start).total_seconds() >= n_seconds:
+			if (elapsed_seconds := (dt_split - dt_start).total_seconds()) >= n_seconds:
+				print(f'    Read {j} chunks in {elapsed_seconds} seconds {j/elapsed_seconds} per second.')
 				break
 		
 		spectral_data_source_helper.cfg.log.progress_stream_hdlr.terminator='\r'
@@ -564,9 +573,9 @@ def action_read_continuum(
 			pltr.ax.plot(
 				line_data['wavenumber'], 
 				spectral_data_source_helper.calc.spec.line_strengths(line_data, np.array([temp]), ds_holder.partition_function, T_ref, squeeze=True),
-				'.',
+				'o',
 				markersize=1,
-				alpha=0.1,
+				alpha=0.5,
 				ls='none',
 				zorder=-1,
 				label = 'strong lines',

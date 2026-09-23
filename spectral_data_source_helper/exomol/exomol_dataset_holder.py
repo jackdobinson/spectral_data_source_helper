@@ -708,8 +708,9 @@ class ExomolDatasetHolder:
 		if trans_fpaths is None:
 			#trans_fpaths = (self.trans_file_precidence(fetch.file_from_cache(f'https://www.{x}',cache=PKG_CACHE,return_fpath=True)) for x in self.api_transition_urls[trans_files_slice])
 			trans_fpaths = self.get_trans_files_by_precidence_from_url(trans_files_slice, cache=PKG_CACHE)
-		_lgr.info(f'{ensure_no_iterative_conversion=}')
-		_lgr.info(f'{self.iterative_conversion_opts=}')
+		
+		#_lgr.info(f'{ensure_no_iterative_conversion=}')
+		#_lgr.info(f'{self.iterative_conversion_opts=}')
 		if (not ensure_no_iterative_conversion) and self.iterative_conversion_opts.enabled:
 			trans_fpaths_iter = self.iteratively_convert_files_to_fastest_format(
 				trans_fpaths, 
@@ -726,6 +727,7 @@ class ExomolDatasetHolder:
 				chunk_size=chunk_size,
 				yield_fpath = True,
 		):
+			#_lgr.info(f'{fpath=} {len(chunk)=} {chunk[0]=}')
 			if self.get_transition_file_path_fmt_and_compression_str(fpath).startswith('.bin32'):
 				chunk['einstein_A'] /= TRANS_STR_FLOAT32_FACTOR
 			yield chunk
@@ -1240,6 +1242,15 @@ class ExomolDatasetHolder:
 				out_stim_emission = line_data_chunk_part['spec_stim_emission'],
 				out = line_data_chunk_part['spec_line_intensity'],
 			)
+			#print(f'{T_ref=}')
+			#print(f'{Q_ref=}')
+			#print(f'{line_data_chunk['E"']=}')
+			#print(f'{line_data_chunk['g_tot\'']=}')
+			#print(f'{line_data_chunk['wavenumber']=}')
+			#print(f'{line_data_chunk['einstein_A']=}')
+			#print(f'{line_data_chunk['spec_boltz_pop']=}')
+			#print(f'{line_data_chunk['spec_stim_emission']=}')
+			#print(f'{line_data_chunk['spec_line_intensity']=}')
 			
 			# NOTE: This is still the limiting factor
 			for bg_name, broad_var_names, broad_source_name in zip(self.broad_gas_names, broad_var_names_list, broad_source_var_names):
@@ -1435,22 +1446,24 @@ class ExomolDatasetHolder:
 				T,
 				out = stimulated_emission_ratio_part	
 			)
+			#print(f'{stimulated_emission_ratio_part=}')
+			
 			spectral_data_source_helper.calc.numba.divide_2d_1d(
 				stimulated_emission_ratio_part,
 				line_data_chunk['spec_stim_emission'],
 				out = stimulated_emission_ratio_part
 			)
+			#print(f'{stimulated_emission_ratio_part=}')
 			
-			spectral_data_source_helper.calc.numba.spec.boltzmann_population_v(
+			spectral_data_source_helper.calc.numba.spec.boltzmann_population_ratio_v(
 				line_data_chunk['E"'],
 				T,
+				T_ref,
 				out = boltz_pop_ratio_part	
 			)
-			spectral_data_source_helper.calc.numba.divide_2d_1d(
-				boltz_pop_ratio_part,
-				line_data_chunk['spec_boltz_pop'],
-				out = boltz_pop_ratio_part
-			)
+			#print(f'{boltz_pop_ratio_part=}')
+			
+			#print(f'{line_data_chunk['spec_boltz_pop']=}')
 			
 			spectral_data_source_helper.calc.numba.spec.line_strength_from_temp_ratios(
 				line_data_chunk['spec_line_intensity'],
@@ -1459,6 +1472,7 @@ class ExomolDatasetHolder:
 				boltz_pop_ratio_part,
 				out = line_strengths_at_temp_part
 			)
+			#print(f'{line_strengths_at_temp_part=}')
 			
 			spectral_data_source_helper.calc.numba.is_gt_2d_0d(
 				line_strengths_at_temp_part,

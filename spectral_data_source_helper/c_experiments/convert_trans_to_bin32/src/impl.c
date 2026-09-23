@@ -106,6 +106,7 @@ void convert_to_bin32_3col(
 		while(rp < half_bytes_to_consume){
 			rp += trans_read_from_buffer_write_bin32_3col(buffer+rp, g);
 			if (__UNLIKELY(errno != 0)){
+				printf("ERROR: TRANS_ENTRY .lo %u .hi %u .value %E\n", TRANS_ENTRY.lo, TRANS_ENTRY.hi, TRANS_ENTRY.value);
 				table_progress->n_bytes = ftell(f);
 				table_progress->n_entries = i;
 				return;
