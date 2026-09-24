@@ -126,9 +126,19 @@ size_t ascii_read_float32_fast_offset(char const* p, float * const x, const int1
 		//errno = EDOM; // domain invaid (i.e. cannot convert to float)
 		return (p-p0);
 	}
-	else if (exp_2 < 0){
+	else if (exp_2 < -22){ // Too small to even use a sub-normal number, so return signed zero.
+		(*x) = XX__ascii_assemble_float32(mantissa_sign, (uint32_t)(0x00000000u), (uint8_t)(0x00)); // S 00000000 00000000000000000000000 is +/- zero (S - Sign)
+		return (p-p0);
+	}
+	else if (exp_2 < 0){ 
+		// we can use a sub-normal number to store the value
+		// Sub-normal numbers sacrifice mantissa bits to hold smaller numbers at lower precision
+		// S 00000000 11111111111111111111111 is largest sub-normal number (S - sign)
+		// S 00000000 00000000000000000000001 is smallest sub-normal number (S - sign)
+		mantissa >>= (-exp_2);
 		exp_2 = 0;
 	}
+	
 	
 	(*x) = XX__ascii_assemble_float32(mantissa_sign, mantissa, (uint8_t)(exp_2));
 	

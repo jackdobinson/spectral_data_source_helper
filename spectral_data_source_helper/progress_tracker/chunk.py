@@ -24,7 +24,7 @@ class ChunkProgressTracker(BaseProgressTracker):
 		
 
 	def reset(self):
-		self.reset_rate()
+		super().reset()
 		self.total_elements = 0
 		self.total_bytes = 0
 		self.prev_total_bytes = 0

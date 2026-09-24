@@ -421,7 +421,8 @@ def line_strength_at_temp(
 
 
 
-@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
+#@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
+@njit(parallel=False)
 def accumulate_pseudocontinuum_1d(
 	weak_line_mask : np.ndarray, #[N_lines]
 	bin_indices : np.ndarray, #[N_lines]
@@ -429,18 +430,20 @@ def accumulate_pseudocontinuum_1d(
 	line_strength_sum : np.ndarray, #[N_bins]
 	input_block : np.ndarray, #[N_lines, N_pairs]
 	output_block : np.ndarray, #[N_bins, N_pairs]
+	n_lines : int,
+	n_bins : int,
+	n_pairs : int,
 ):
-	n_pairs = input_block.shape[1]
 
 	# Reset accumulators
-	for x in range(line_strength_sum.shape[0]):
+	for x in range(n_bins):
 		line_strength_sum[x] = 0
 		for k in range(n_pairs):
 			output_block[x][k] = 0
 
 	# NOTE: parallel loop may have race condition on accumulators, NUMBA says it
 	# accounts for that but this should be checked
-	for i in prange(weak_line_mask.shape[0]):
+	for i in range(n_lines):
 		if not weak_line_mask[i]:
 			continue
 		
@@ -452,7 +455,7 @@ def accumulate_pseudocontinuum_1d(
 			output_block[x][k] += line_strengths_at_temp[i] * input_block[i][k]
 
 
-@njit(parallel=False)
+@njit(parallel=spectral_data_source_helper.calc.numba.PARALLEL)
 def accumulate_pseudocontinuum(
 	weak_line_mask : np.ndarray, #[N_temp, N_lines]
 	bin_indices : np.ndarray, #[N_temp, N_lines]
@@ -461,7 +464,11 @@ def accumulate_pseudocontinuum(
 	input_block : np.ndarray, #[N_lines, N_pairs]
 	output_block : np.ndarray, #[N_temp, N_bins, N_pairs]
 ):
-	for j in range(weak_line_mask.shape[0]):
+	n_temp = weak_line_mask.shape[0]
+	n_lines = weak_line_mask.shape[1]
+	n_bins = output_block.shape[1]
+	n_pairs = output_block.shape[2]
+	for j in prange(n_temp):
 		accumulate_pseudocontinuum_1d(
 			weak_line_mask[j],
 			bin_indices[j],
@@ -469,4 +476,7 @@ def accumulate_pseudocontinuum(
 			line_strength_sum[j],
 			input_block,
 			output_block[j],
-		)	
+			n_lines,
+			n_bins,
+			n_pairs,
+		)

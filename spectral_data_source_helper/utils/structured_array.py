@@ -23,10 +23,11 @@ module_progress_sink : ModuleVar = ModuleVar(
 class StructuredArrayFile:
 	class_writable_modes : tuple[str,...] = ('wb', 'rb+', 'ab')
 	class_readable_modes : tuple[str,...] = ('rb', 'rb+')
+	class_updateable_modes : tuple[str,...] = ('ab', 'rb+')
 	
 	def __init__(
 			self, 
-			fpath, mode : None | Literal['wb', 'rb'] = None,
+			fpath, mode : None | Literal['wb', 'rb', 'ab', 'rb+'] = None,
 			reader : None | BinaryReader = None,
 	):
 		self.fpath = fpath
@@ -50,16 +51,15 @@ class StructuredArrayFile:
 	def __del__(self):
 		self.close()
 	
-	def open(self, mode : Literal['wb', 'rb']) -> Self:
+	def open(self, mode : Literal['wb', 'rb', 'ab', 'rb+']) -> Self:
 		
-		assert mode in ('wb', 'rb'), "`mode` must be one of ('wb', 'rb')"
+		assert mode in ('wb', 'rb', 'ab', 'rb+'), "`mode` must be one of ('wb', 'rb', 'ab', 'rb+')"
 		
 		if self.fhdl is not None:
 			assert self.mode == mode, "Cannot reopen file with a different mode before closing it"
 			return self
 		
 		self.mode = mode
-		
 
 		self.fhdl = open(self.fpath, self.mode)
 		
@@ -74,6 +74,14 @@ class StructuredArrayFile:
 		self.header_byte_end = 0
 		self.header_written = False
 		self.arr_dtype = None
+		
+		if self.mode in self.class_updateable_modes:
+			if self.mode == 'rb+':
+				self.arr_dtype = self.read_dtype()
+				if self.arr_dtype is not None:
+					self.header_written = True
+			else:
+				self.header_written = True # assume header is written
 		
 		return self
 	
@@ -117,6 +125,10 @@ class StructuredArrayFile:
 		#print(f'reading dtype {self.fhdl.name=}', flush=True)
 		# Read 4 bytes at a time until string ends with null character
 		hdr_part = self.read_bytes(4)
+		if len(hdr_part) == 0:
+			self.header_byte_end = 0
+			return None
+		
 		while hdr_part[-1] != NULL_BYTE and len(hdr_part) <= HDR_MAX_SIZE:
 			hdr_part += self.read_bytes(4)
 		
@@ -129,11 +141,14 @@ class StructuredArrayFile:
 		return hdr_part.decode(encoding)
 	
 	def read_dtype(self, encoding : str = 'ascii'):
-		return spectral_data_source_helper.utils.dtype.from_string(self.read_header(encoding=encoding))
+		hdr = self.read_header(encoding=encoding)
+		return spectral_data_source_helper.utils.dtype.from_string(hdr) if hdr is not None else None
 	
 	def read(self, count : int = -1) -> np.ndarray:	
 		if self.arr_dtype is None:
 			self.arr_dtype = self.read_dtype()
+
+		#print(f'{self.arr_dtype=}')
 
 		result = np.frombuffer(
 			self.read_bytes(count*self.arr_dtype.itemsize), 

@@ -14,6 +14,8 @@ from spectral_data_source_helper.utils import fetch
 from spectral_data_source_helper.utils import read
 from spectral_data_source_helper.utils import structured_array
 
+from ..progress_tracker.chunk import ChunkProgressTracker
+
 from .cfg.const import (
 	PKG_CACHE,
 	T_ref,
@@ -29,7 +31,7 @@ from . import qn_set_manager
 from . import broad_file_manager
 from .c_compat import ConvertTransToBin32#, run_main #convert_trans_to_bin32
 
-#from spectral_data_source_helper.cfg.log import progress_lgr
+from spectral_data_source_helper.cfg.log import progress_lgr
 from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
 
 from .datatypes import (
@@ -692,13 +694,15 @@ class ExomolDatasetHolder:
 				best_fpath = fetch.file_from_cache(f'https://www.{api_trans_url}',cache=cache, return_fpath=True)
 			
 			yield best_fpath
-	
+
+
 	def iter_transitions(
 			self,
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
 			trans_fpaths : None | Iterable[Path] = None, # If present iterate over these files, otherwise iterate over all of them
 			ensure_no_iterative_conversion : bool = False,
+			skip_n_transitions : int = 0, # Skip this number of transitions, used when continuing a previous iteration
 	) -> Generator[np.ndarray]:
 		
 		dt_start = dt.datetime.now()
@@ -720,13 +724,28 @@ class ExomolDatasetHolder:
 			trans_fpaths_iter = trans_fpaths
 		
 		
+		progress_tracker = ChunkProgressTracker(
+			lambda x: progress_lgr.info(str(x), stacklevel=4), 
+			rate_limit_timeout = 0.5, 
+			chunk_element_name='Record'
+		)
+		
 		for fpath, chunk in read.files_via_structured_array_chunk(
 				trans_fpaths_iter,
 				dtype=self.trans_dtype,
 				delim=None,
 				chunk_size=chunk_size,
 				yield_fpath = True,
+				progress_tracker = progress_tracker,
 		):
+			if skip_n_transitions > chunk.size:
+				skip_n_transitions -= chunk.size
+				continue
+			elif skip_n_transitions > 0:
+				chunk = chunk[skip_n_transitions:]
+				skip_n_transitions = 0
+				progress_tracker.reset()
+			
 			#_lgr.info(f'{fpath=} {len(chunk)=} {chunk[0]=}')
 			if self.get_transition_file_path_fmt_and_compression_str(fpath).startswith('.bin32'):
 				chunk['einstein_A'] /= TRANS_STR_FLOAT32_FACTOR
@@ -794,10 +813,11 @@ class ExomolDatasetHolder:
 						_lgr.info(f'Deleting downloaded file "{downloaded_trans_fpath.name}"')
 						downloaded_trans_fpath.unlink()
 			
-			if self.iterative_conversion_opts.delete_final_files_after_use:
-				_lgr.info(f'Deleting iteratively final converted file "{next_trans_fpaths[:-1].name}"')
-				if next_trans_fpaths[:-1].exists():
-					next_trans_fpaths[:-1].unlink()
+			if self.iterative_conversion_opts.delete_final_files_after_use and len(next_trans_fpaths) > 0:
+				final_fpath = next_trans_fpaths[-1]
+				_lgr.info(f'Deleting iteratively final converted file "{final_fpath.name}"')
+				if final_fpath.exists():
+					final_fpath.unlink()
 		
 	
 	
@@ -1096,6 +1116,7 @@ class ExomolDatasetHolder:
 			self,
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
+			skip_n_transition_states : int = 0, # Skip this number of transition states, used when continuing a previous iteration
 	) -> Generator[np.ndarray]:
 		dt_start = dt.datetime.now()
 		_lgr.info(f'Starting to get transition state information at {dt_start}')
@@ -1110,7 +1131,7 @@ class ExomolDatasetHolder:
 		calc_wavenumber_flag = self.trans_n_cols < 4
 		
 		
-		for i, trans_chunk in enumerate(self.iter_transitions(chunk_size=chunk_size, trans_files_slice=trans_files_slice)):
+		for i, trans_chunk in enumerate(self.iter_transitions(chunk_size=chunk_size, trans_files_slice=trans_files_slice, skip_n_transitions = skip_n_transition_states)):
 			chunk_slice = slice(None, trans_chunk.size)
 			_lgr.debug(f'{trans_chunk.size=} {chunk_slice=} {chunk_size=}')
 			
@@ -1184,6 +1205,7 @@ class ExomolDatasetHolder:
 			self,
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
+			skip_n_lines : int = 0, # Skip this number of lines, used when continuing a previous iteration
 	):		
 		line_data_chunk = np.empty((chunk_size,), dtype=self.line_data_dtype)
 		
@@ -1199,7 +1221,7 @@ class ExomolDatasetHolder:
 		broad_array_gas_slices, broad_array, broad_comp_mask, broad_values = self.broadening_data
 		
 		
-		for trans_states_chunk in self.iter_transition_states(chunk_size=chunk_size, trans_files_slice=trans_files_slice):
+		for trans_states_chunk in self.iter_transition_states(chunk_size=chunk_size, trans_files_slice=trans_files_slice, skip_n_transition_states=skip_n_lines):
 			chunk_slice = slice(None,len(trans_states_chunk))
 			line_data_chunk_part = line_data_chunk[chunk_slice]
 			
@@ -1291,6 +1313,7 @@ class ExomolDatasetHolder:
 					line_data_chunk[broad_source_name]
 				)
 			
+			
 			yield line_data_chunk_part
 			
 		
@@ -1302,16 +1325,21 @@ class ExomolDatasetHolder:
 		return np.interp(T, self.partition_function['T'], self.partition_function['Q'])
 	
 	
-	def get_line_and_continuum_fnames_at_temp(
+	def get_line_and_continuum_fpaths_at_temp(
 			self,
 			T_arr : np.ndarray,
 			temp_fmt : str = 'T{}',
-	) -> tuple[tuple[str,...],tuple[str,...],tuple[str,...]]:
-		contbins_fnames = tuple(self.datafile_prefix + '_' + temp_fmt.format(T) +'.contbins' for T in T_arr)
-		continuum_fnames = tuple(self.datafile_prefix + '_' + temp_fmt.format(T) +'.continuum' for T in T_arr)
-		stronglines_fnames = tuple(self.datafile_prefix + '_' + temp_fmt.format(T) +'.stronglines' for T in T_arr)
+			dir : Path = Path('./'),
+	) -> tuple[Path, tuple[Path,...],tuple[Path,...],tuple[Path,...]]:
+		temp_datafile_stems = tuple(self.datafile_prefix + '_' + temp_fmt.format(T) for T in T_arr)
 		
-		return (contbins_fnames, continuum_fnames, stronglines_fnames)
+		progress_fname = dir / (self.datafile_prefix+'.cont_progress')
+		
+		contbins_fnames = tuple(dir / (s+'.contbins') for s in temp_datafile_stems)
+		continuum_fnames = tuple(dir / (s+'.continuum') for s in temp_datafile_stems)
+		stronglines_fnames = tuple(dir / (s+'.stronglines') for s in temp_datafile_stems)
+		
+		return (progress_fname, contbins_fnames, continuum_fnames, stronglines_fnames)
 	
 	@property
 	def pseudo_continuum_contribution_dtype_list(self) -> list[tuple[str,Any],...]:
@@ -1350,6 +1378,7 @@ class ExomolDatasetHolder:
 			continuum_line_intensity_cutoff : float = 1E-24,
 			chunk_size : int = 1_000_000,
 			trans_files_slice : slice = slice(None),
+			skip_n_lines : int = 0, # Skip this number of lines, used when continuing a previous iteration.
 	) -> Generator[tuple[np.ndarray, np.ndarray, tuple[np.ndarray], np.ndarray]]:
 		
 		n_temps = T.size
@@ -1395,11 +1424,10 @@ class ExomolDatasetHolder:
 		ldc_struct_names = [x[1] for x in pseudo_continuum_var_name_pair_tuple]
 		
 		
-		for line_data_chunk in self.iter_line_data(chunk_size=chunk_size, trans_files_slice=trans_files_slice):
-			
+		for line_data_chunk in self.iter_line_data(chunk_size=chunk_size, trans_files_slice=trans_files_slice, skip_n_lines=skip_n_lines):
 			chunk_slice = slice(None, line_data_chunk.size)
-			strong_line_mask_part = strong_line_mask[:, chunk_slice]
 			
+			strong_line_mask_part = strong_line_mask[:, chunk_slice]
 			stimulated_emission_ratio_part = stimulated_emission_ratio[:,chunk_slice]
 			boltz_pop_ratio_part = boltz_pop_ratio[:,chunk_slice]
 			line_strengths_at_temp_part = line_strengths_at_temp[:, chunk_slice]
@@ -1420,27 +1448,8 @@ class ExomolDatasetHolder:
 				copy = False
 			)
 			assert ldc_view.base is not None, "Must be able to build a view of `line_data_chunk`"
-			"""
-			
-			# NOTE: We need to have any entries in `line_data_chunk` that have problematic values to have `spec_line_intensity` set to zero
-			# by this point. That way erroneous values will not have any effect on the output.
-			
-			_lgr.info(f'{line_data_chunk.size=}')
-			#print(f'{np.count_nonzero(np.isnan(line_data_chunk['spec_line_intensity']))=}')
-			#print(f'{np.count_nonzero(line_data_chunk['wavenumber'] == 0)=}')
-			
-			# set continuum contribution for this chunk to zero
 			
 			
-			#wavenumber_gt_zero_mask[chunk_slice] = line_data_chunk['wavenumber'] > 0
-			
-			
-			#stimulated_emission_ratio[:,chunk_slice][:, wavenumber_gt_zero_mask[chunk_slice]] = (
-			#	one_minus_exp_c2_nu(T_ref,line_data_chunk['wavenumber'][wavenumber_gt_zero_mask[chunk_slice]]) 
-			#	/ one_minus_exp_c2_nu(T, line_data_chunk["spec_line_factor_one_minus_exp_wavenumber"][wavenumber_gt_zero_mask[chunk_slice]])
-			#)
-			
-			"""
 			spectral_data_source_helper.calc.numba.spec.stimulated_emission_v(
 				line_data_chunk['wavenumber'],
 				T,
@@ -1517,6 +1526,7 @@ class ExomolDatasetHolder:
 			_lgr.debug(f'{n_weak_lines_in_continuum=} {n_weak_lines_outside_continuum=}')
 			
 			
+			# This is quite slow
 			spectral_data_source_helper.calc.numba.spec.accumulate_pseudocontinuum(
 				weak_line_mask_part,
 				bin_indices_part,
@@ -1528,10 +1538,11 @@ class ExomolDatasetHolder:
 			
 			
 			
+			
 			yield (
 				n_strong_lines, 
 				n_weak_lines_in_continuum, 
-				(line_data_chunk[strong_line_mask_part[j]] for j in range(n_temps)), 
+				[line_data_chunk[strong_line_mask_part[j]] for j in range(n_temps)], 
 				pseudo_continuum_contribution
 			)
 			_lgr.debug('strong lines and continuum data outputted')

@@ -288,6 +288,7 @@ def action_calc_continuum(
 		continuum_n_bins : int = 1_000,
 		continuum_bin_spacing : Literal['lin', 'log'] = 'lin',
 		chunk_size : int = CHUNK_SIZE,
+		force_restart : bool = False,
 ):
 	#pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	progress_lgr.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
@@ -311,21 +312,72 @@ def action_calc_continuum(
 		total_weak_lines_in_continuum = np.zeros(temperature_arr.shape, dtype=int)
 	
 	
-		contbins_fpaths, continuum_fpaths, stronglines_fpaths = (tuple(REPO_LOCAL / fname for fname in fnames) for fnames in ds_holder.get_line_and_continuum_fnames_at_temp(temperature_arr))
-	
+		progress_fpath, contbins_fpaths, continuum_fpaths, stronglines_fpaths = ds_holder.get_line_and_continuum_fpaths_at_temp(temperature_arr, dir=REPO_LOCAL)
+		
 		dt_start = dt.datetime.now()
 		dt_split_2 = dt_start
-	
+		
+		progress_header = (
+			'\n'.join(('\n'.join(map(lambda x: str(x.relative_to(progress_fpath.parent)), fpaths)) for fpaths in zip(stronglines_fpaths, continuum_fpaths, contbins_fpaths)))
+			+ '\n' 
+			+ ('0 '*(1+2*temperature_arr.size)) # <total_lines_processed> <total_strong_lines_array> <total_weak_lines_array>
+			+'\n'
+		)
+		
+		# Check if we are continuing an interrupted calculation
+		n_lines_previously_processed = 0
+		if not force_restart and progress_fpath.exists():
+			with open(progress_fpath, 'r') as progress_fhdl:
+				progress_contents = progress_fhdl.read()
+				if progress_header == progress_contents[:len(progress_header)]:
+					# we are operating upon the same set of files
+					progress_contents = progress_contents.rstrip()
+					
+					# Last line has
+					# <total_lines_processed> <total_strong_lines_array> <total_weak_lines_array>
+					total_lines_processed, *total_strong_weak_lines = map(int, progress_contents.rsplit('\n', maxsplit=1)[1].strip().split())
+					n_lines_previously_processed = total_lines_processed
+					total_strong_lines[:] = total_strong_weak_lines[:temperature_arr.size]
+					total_weak_lines_in_continuum[:] = total_strong_weak_lines[temperature_arr.size:]
+		
+		if n_lines_previously_processed == 0:
+			print(f'Starting calculation, initialising progress file "{progress_fpath.name}"')
+			with open(progress_fpath, 'w') as progress_fhdl:
+				progress_fhdl.write(progress_header)
+		else:
+			print(f'Continuuing interrupted calculation. Processed {n_lines_previously_processed} lines before interruption, will skip forward to that point.')
+			for i, fpath in enumerate(continuum_fpaths):
+				with spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'rb') as f:
+					pseudo_continuums[i] = f.read()
+			
+			
+			
+		progress_record_start_pos = len(progress_header)
+		del progress_header # this can be quite large so free up the memory
+		
+		
+		
 		# Write the continuum bins to their files
 		for contbins_fpath in contbins_fpaths:
 			with open(contbins_fpath, 'wb') as f:
 				continuum_bin_edges.tofile(f)
 			print(f'Written continum bin edge data to "{str(contbins_fpath)}"')
 		
+		stop_loop = False
+		continuum_fhdls = []
+		stronglines_fhdls = []
 		try:
-			continuum_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in continuum_fpaths)
-			stronglines_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in stronglines_fpaths)
-		
+			
+			progress_fhdl = open(progress_fpath, 'r+') # read and write data
+			progress_fhdl.seek(progress_record_start_pos, 0)
+			
+			if n_lines_previously_processed != 0:
+				continuum_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'rb+') for fpath in continuum_fpaths)
+				stronglines_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'ab') for fpath in stronglines_fpaths)
+			else:
+				continuum_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in continuum_fpaths)
+				stronglines_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in stronglines_fpaths)
+			
 			for n_strong_lines, n_weak_lines_in_continuum, strong_lines_chunks, pseudo_continuum_contributions in ds_holder.iter_lines_and_continuum_at_temp(
 				T = temperature_arr, 
 				continuum_bin_edges = continuum_bin_edges,
@@ -333,36 +385,49 @@ def action_calc_continuum(
 				chunk_size=chunk_size,
 				trans_files_slice=slice(None),
 				#trans_files_slice=slice(None,3),
+				skip_n_lines = n_lines_previously_processed,
 			):
+				if stop_loop:
+					break
 				
 				total_strong_lines += n_strong_lines
 				total_weak_lines_in_continuum += n_weak_lines_in_continuum
-				
-				dt_start_write = dt.datetime.now()
-				
-				#strong_lines_chunks = tuple(strong_lines_chunks)
-				
-				for slc, fhdl in zip(strong_lines_chunks, stronglines_fhdls):
-					fhdl.write(slc)
 				
 				# Have to do summation field-by-field as numpy does not know how to do it for structured arrays
 				for field_name in pseudo_continuums.dtype.fields:
 					pseudo_continuums[field_name] += pseudo_continuum_contributions[field_name]
 				
-				# Write out continuum data-so-far to file
-				for i, (pc_part, fhdl) in enumerate(zip(pseudo_continuums, continuum_fhdls)):
-					fhdl.write(pseudo_continuums[i])
-					fhdl.seek(0,0)
+				
+				dt_start_write = dt.datetime.now()
+				
+				try:
+					for slc, fhdl in zip(strong_lines_chunks, stronglines_fhdls):
+						fhdl.write(slc)
+					
+					# Write out continuum data-so-far to file
+					for i, (pc_part, fhdl) in enumerate(zip(pseudo_continuums, continuum_fhdls)):
+						fhdl.write(pseudo_continuums[i])
+						fhdl.seek(0,0)
+					
+					progress_fhdl.write(f'{total_strong_lines[0] + total_weak_lines_in_continuum[0]} ')
+					np.savetxt(progress_fhdl, total_strong_lines, fmt='%d ', delimiter='', newline='', header='', footer='')
+					np.savetxt(progress_fhdl, total_weak_lines_in_continuum, fmt='%d ', delimiter='', newline='', header='', footer='')
+					progress_fhdl.write('\n')
+					progress_fhdl.seek(progress_record_start_pos, 0)
+				except KeyboardInterrupt:
+					stop_loop = True
 				
 				dt_split = dt.datetime.now()
-				dt_elapsed_delta = dt_split - dt_start
-				dt_elapsed_str = f'{dt_elapsed_delta.days}D {dt_elapsed_delta.seconds//3600}H {(dt_elapsed_delta.seconds %3600)//60}M {dt_elapsed_delta.seconds%60}s'
+				
 				
 				if (dt_split - dt_split_2).total_seconds() > 1:
+					dt_elapsed_delta = dt_split - dt_start
+					dt_elapsed_str = f'{dt_elapsed_delta.days}D {dt_elapsed_delta.seconds//3600}H {(dt_elapsed_delta.seconds %3600)//60}M {dt_elapsed_delta.seconds%60}s'
 				
 					#print(f'{strong_lines_chunks[0]=}')
 				
 					dt_split_2 = dt.datetime.now()
+					print()
 					print(f'Writing data to files took {1000*(dt_split - dt_start_write).total_seconds()} ms.')
 					
 					print('     Temperature | num. strong lines | num. weak lines | total strong lines | total weak lines')
@@ -370,14 +435,21 @@ def action_calc_continuum(
 						print(f'     {temp:11.2f} | {n_sl:17d} | {n_wl:16d} | {t_sl:18d} | {t_wl:16d}')
 					
 					print(f'Elapsed time: {dt_elapsed_str}')
-				
-				
 		
+		except KeyboardInterrupt:
+			stop_loop = True
 		finally:
+			if stop_loop:
+				print('\n\nCalculation Interrupted')
+			else:
+				print('\n\nCalculation Ended')
+			
+			progress_fhdl.close()
 			for fhdl in continuum_fhdls:
 				fhdl.close()
 			for fhdl in stronglines_fhdls:
 				fhdl.close()
+			
 
 
 def action_read_continuum(
@@ -657,6 +729,7 @@ if __name__=='__main__':
 	calc_continuum_parser.add_argument('-n', '--continuum_n_bins', type=int, help='Number of bins in the continuum', default=1_000)
 	calc_continuum_parser.add_argument('-s', '--continuum_bin_spacing', type=str, choices=('lin', 'log'), help='Spacing of continuum bins', default='lin')
 	calc_continuum_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
+	calc_continuum_parser.add_argument('-R', '--force_restart', action='store_true', help='Force restart the calculation, do not continue from last position.', default=False)
 	
 	read_continuum_parser = subparsers.add_parser('read_continuum', help='read saved continuum data files')
 	read_continuum_parser.set_defaults(func = action_read_continuum)
