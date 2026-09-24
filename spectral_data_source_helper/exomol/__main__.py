@@ -289,6 +289,7 @@ def action_calc_continuum(
 		continuum_bin_spacing : Literal['lin', 'log'] = 'lin',
 		chunk_size : int = CHUNK_SIZE,
 		force_restart : bool = False,
+		output_dir : Path = REPO_LOCAL,
 ):
 	#pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	progress_lgr.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
@@ -312,7 +313,7 @@ def action_calc_continuum(
 		total_weak_lines_in_continuum = np.zeros(temperature_arr.shape, dtype=int)
 	
 	
-		progress_fpath, contbins_fpaths, continuum_fpaths, stronglines_fpaths = ds_holder.get_line_and_continuum_fpaths_at_temp(temperature_arr, dir=REPO_LOCAL)
+		progress_fpath, contbins_fpaths, continuum_fpaths, stronglines_fpaths = ds_holder.get_line_and_continuum_fpaths_at_temp(temperature_arr, dir=output_dir)
 		
 		dt_start = dt.datetime.now()
 		dt_split_2 = dt_start
@@ -730,6 +731,7 @@ if __name__=='__main__':
 	calc_continuum_parser.add_argument('-s', '--continuum_bin_spacing', type=str, choices=('lin', 'log'), help='Spacing of continuum bins', default='lin')
 	calc_continuum_parser.add_argument('-c', '--chunk_size', type=int, help='Chunk size to use during calculations', default=CHUNK_SIZE)
 	calc_continuum_parser.add_argument('-R', '--force_restart', action='store_true', help='Force restart the calculation, do not continue from last position.', default=False)
+	calc_continuum_parser.add_argument('-o', '--output_dir', type=Path, help='Path to the output directory', default=REPO_LOCAL)
 	
 	read_continuum_parser = subparsers.add_parser('read_continuum', help='read saved continuum data files')
 	read_continuum_parser.set_defaults(func = action_read_continuum)
@@ -740,7 +742,6 @@ if __name__=='__main__':
 	read_continuum_parser.add_argument('-t', '--temp', type=float, help='Temperature to calculate pseudo-continuum at', default=None)
 	read_continuum_parser.add_argument('-e', '--eps', type=float, help='If present, line strength sums with a magnitude smaller than this are treated as a truncation error, and -ve values with a larger magnitude are treated as a problem. Otherwise any -ve line strength sums are treated as errors.', default=None)
 	read_continuum_parser.add_argument('-p', '--extra_plots', action='count', help='Will show extra plots depending upon the number of times passed', default=0)
-	
 	
 	convert_trans_parser = subparsers.add_parser('convert_trans', help='Convert transition data to new format')
 	convert_trans_parser.set_defaults(func = action_convert_trans)
