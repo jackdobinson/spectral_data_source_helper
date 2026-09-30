@@ -1433,7 +1433,6 @@ class ExomolDatasetHolder:
 		# get structured array view names for later
 		ldc_struct_names = [x[1] for x in pseudo_continuum_var_name_pair_tuple]
 		
-		
 		for line_data_chunk in self.iter_line_data(chunk_size=chunk_size, trans_files_slice=trans_files_slice, skip_n_lines=skip_n_lines):
 			chunk_slice = slice(None, line_data_chunk.size)
 			
@@ -1547,13 +1546,11 @@ class ExomolDatasetHolder:
 			)
 			
 			
-			
-			strong_lines_union = line_data_chunk[np.sum(strong_line_mask_part,axis=0)]
 			yield (
 				line_data_chunk.size,
 				n_strong_lines, 
 				n_weak_lines_in_continuum, 
-				strong_lines_union,
+				line_data_chunk[np.sum(strong_line_mask_part,axis=0) > 0], # strong lines union
 				pseudo_continuum_contribution
 			)
 			_lgr.debug('strong lines and continuum data outputted')
