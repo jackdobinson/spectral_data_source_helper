@@ -1328,10 +1328,17 @@ class ExomolDatasetHolder:
 	def get_line_and_continuum_fpaths_at_temp(
 			self,
 			T_arr : np.ndarray,
+			continuum_line_intensity_cutoff : float,
 			temp_fmt : str = 'T{}',
+			continuum_line_intensity_cutoff_fmt : str = 'S{:E}',
 			dir : Path = Path('./'),
 	) -> tuple[Path, tuple[Path,...],tuple[Path,...],tuple[Path,...]]:
-		temp_datafile_stems = tuple(self.datafile_prefix + '_' + temp_fmt.format(T) for T in T_arr)
+		temp_datafile_stems = tuple(
+			self.datafile_prefix 
+			+ '_' 
+			+ temp_fmt.format(T) 
+			+ '_' + continuum_line_intensity_cutoff_fmt.format(continuum_line_intensity_cutoff) 
+		for T in T_arr)
 		
 		progress_fname = dir / (self.datafile_prefix+'.cont_progress')
 		

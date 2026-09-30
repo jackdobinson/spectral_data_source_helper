@@ -313,7 +313,11 @@ def action_calc_continuum(
 		total_weak_lines_in_continuum = np.zeros(temperature_arr.shape, dtype=int)
 	
 	
-		progress_fpath, contbins_fpaths, continuum_fpaths, stronglines_fpaths = ds_holder.get_line_and_continuum_fpaths_at_temp(temperature_arr, dir=output_dir)
+		progress_fpath, contbins_fpaths, continuum_fpaths, stronglines_fpaths = ds_holder.get_line_and_continuum_fpaths_at_temp(
+			temperature_arr, 
+			continuum_line_intensity_cutoff,
+			dir=output_dir
+		)
 		
 		dt_start = dt.datetime.now()
 		dt_split_2 = dt_start
@@ -512,7 +516,10 @@ def action_read_continuum(
 		
 		# Get temperature from file name
 		print('    Getting creation temperature from file name...')
-		temp_cont = float(line_data_fpath.name.rsplit('T',1)[1].rsplit('.',1)[0])
+		line_data_fname = line_data_fpath.name
+		x = line_data_fname.rsplit('.',1)[0] # remove extension
+		x = x.rsplit('_T', 1)[1] # get temperature part with possible extra stuff
+		temp_cont = float(x.split('_',1)[0]) # get only temperature part
 		print(f'    Found creation temperature {temp_cont}')
 		
 		if temp is None:
