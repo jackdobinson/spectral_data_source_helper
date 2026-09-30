@@ -1333,6 +1333,9 @@ class ExomolDatasetHolder:
 			continuum_line_intensity_cutoff_fmt : str = 'S{:E}',
 			dir : Path = Path('./'),
 	) -> tuple[Path, tuple[Path,...],tuple[Path,...],tuple[Path,...]]:
+		
+		cutoff_datafile_stem =self.datafile_prefix + '_' + continuum_line_intensity_cutoff_fmt.format(continuum_line_intensity_cutoff)
+		
 		temp_datafile_stems = tuple(
 			self.datafile_prefix 
 			+ '_' 
@@ -1341,12 +1344,12 @@ class ExomolDatasetHolder:
 		for T in T_arr)
 		
 		progress_fname = dir / (self.datafile_prefix+'.cont_progress')
+		stronglines_fname = dir / (cutoff_datafile_stem+'.stronglines')
 		
 		contbins_fnames = tuple(dir / (s+'.contbins') for s in temp_datafile_stems)
 		continuum_fnames = tuple(dir / (s+'.continuum') for s in temp_datafile_stems)
-		stronglines_fnames = tuple(dir / (s+'.stronglines') for s in temp_datafile_stems)
 		
-		return (progress_fname, contbins_fnames, continuum_fnames, stronglines_fnames)
+		return (progress_fname, stronglines_fname, contbins_fnames, continuum_fnames)
 	
 	@property
 	def pseudo_continuum_contribution_dtype_list(self) -> list[tuple[str,Any],...]:
@@ -1388,7 +1391,7 @@ class ExomolDatasetHolder:
 			skip_n_lines : int = 0, # Skip this number of lines, used when continuing a previous iteration.
 	) -> Generator[tuple[np.ndarray, np.ndarray, tuple[np.ndarray], np.ndarray]]:
 		
-		n_temps = T.size
+		#n_temps = T.size
 		
 		Q_ratio =  self.partition_function_at(T_ref) / self.partition_function_at(T)
 		
@@ -1545,11 +1548,12 @@ class ExomolDatasetHolder:
 			
 			
 			
-			
+			strong_lines_union = line_data_chunk[np.sum(strong_line_mask_part,axis=0)]
 			yield (
+				line_data_chunk.size,
 				n_strong_lines, 
 				n_weak_lines_in_continuum, 
-				[line_data_chunk[strong_line_mask_part[j]] for j in range(n_temps)], 
+				strong_lines_union,
 				pseudo_continuum_contribution
 			)
 			_lgr.debug('strong lines and continuum data outputted')

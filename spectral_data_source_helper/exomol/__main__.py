@@ -313,7 +313,7 @@ def action_calc_continuum(
 		total_weak_lines_in_continuum = np.zeros(temperature_arr.shape, dtype=int)
 	
 	
-		progress_fpath, contbins_fpaths, continuum_fpaths, stronglines_fpaths = ds_holder.get_line_and_continuum_fpaths_at_temp(
+		progress_fpath, stronglines_fpath, contbins_fpaths, continuum_fpaths = ds_holder.get_line_and_continuum_fpaths_at_temp(
 			temperature_arr, 
 			continuum_line_intensity_cutoff,
 			dir=output_dir
@@ -323,7 +323,9 @@ def action_calc_continuum(
 		dt_split_2 = dt_start
 		
 		progress_header = (
-			'\n'.join(('\n'.join(map(lambda x: str(x.relative_to(progress_fpath.parent)), fpaths)) for fpaths in zip(stronglines_fpaths, continuum_fpaths, contbins_fpaths)))
+			str(stronglines_fpath.relative_to(progress_fpath.parent))
+			+ '\n'
+			+ '\n'.join(('\n'.join(map(lambda x: str(x.relative_to(progress_fpath.parent)), fpaths)) for fpaths in zip(continuum_fpaths, contbins_fpaths)))
 			+ '\n' 
 			+ ('0 '*(1+2*temperature_arr.size)) # <total_lines_processed> <total_strong_lines_array> <total_weak_lines_array>
 			+'\n'
@@ -378,12 +380,12 @@ def action_calc_continuum(
 			
 			if n_lines_previously_processed != 0:
 				continuum_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'rb+') for fpath in continuum_fpaths)
-				stronglines_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'ab') for fpath in stronglines_fpaths)
+				stronglines_fhdl = spectral_data_source_helper.utils.structured_array.StructuredArrayFile(stronglines_fpath,'ab')
 			else:
 				continuum_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in continuum_fpaths)
-				stronglines_fhdls = tuple(spectral_data_source_helper.utils.structured_array.StructuredArrayFile(fpath,'wb') for fpath in stronglines_fpaths)
+				stronglines_fhdl = spectral_data_source_helper.utils.structured_array.StructuredArrayFile(stronglines_fpath,'wb')
 			
-			for n_strong_lines, n_weak_lines_in_continuum, strong_lines_chunks, pseudo_continuum_contributions in ds_holder.iter_lines_and_continuum_at_temp(
+			for n_lines_consumed, n_strong_lines, n_weak_lines_in_continuum, strong_lines_union_chunk, pseudo_continuum_contributions in ds_holder.iter_lines_and_continuum_at_temp(
 				T = temperature_arr, 
 				continuum_bin_edges = continuum_bin_edges,
 				continuum_line_intensity_cutoff=continuum_line_intensity_cutoff,
@@ -406,15 +408,14 @@ def action_calc_continuum(
 				dt_start_write = dt.datetime.now()
 				
 				try:
-					for slc, fhdl in zip(strong_lines_chunks, stronglines_fhdls):
-						fhdl.write(slc)
+					stronglines_fhdl.write(strong_lines_union_chunk)
 					
 					# Write out continuum data-so-far to file
 					for i, (pc_part, fhdl) in enumerate(zip(pseudo_continuums, continuum_fhdls)):
 						fhdl.write(pseudo_continuums[i])
 						fhdl.seek(0,0)
 					
-					progress_fhdl.write(f'{total_strong_lines[0] + total_weak_lines_in_continuum[0]} ')
+					progress_fhdl.write(f'{n_lines_consumed} ')
 					np.savetxt(progress_fhdl, total_strong_lines, fmt='%d ', delimiter='', newline='', header='', footer='')
 					np.savetxt(progress_fhdl, total_weak_lines_in_continuum, fmt='%d ', delimiter='', newline='', header='', footer='')
 					progress_fhdl.write('\n')
