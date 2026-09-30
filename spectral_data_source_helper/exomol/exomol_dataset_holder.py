@@ -1421,6 +1421,15 @@ class ExomolDatasetHolder:
 	
 		n_weak_indices = np.zeros((T.size,), dtype=int)
 		
+		strong_lines_union_chunk = np.empty((chunk_size,), dtype=self.line_data_dtype)
+		
+		#slu_view = np.lib.recfunctions.structured_to_unstructured(
+		#	strong_lines_union_chunk[ldc_struct_names],
+		#	dtype = strong_lines_union_chunk.dtype.fields[ldc_struct_names[0]][0],
+		#	copy = False
+		#)
+		#assert slu_view.base is not None, "Must be able to build a view of `stron_line_union_chunk`"
+		
 		# Build strutured array views for later
 		pcc_struct_names = [x[0] for x in pseudo_continuum_var_name_pair_tuple]
 		pcc_view = np.lib.recfunctions.structured_to_unstructured(
@@ -1546,11 +1555,18 @@ class ExomolDatasetHolder:
 			)
 			
 			
+			#n_strong_lines_union = spectral_data_source_helper.calc.numba.select_if_any(
+			#	strong_line_mask_part,
+			#	out = weak_line_mask_part
+			#)
+			
+			
 			yield (
 				line_data_chunk.size,
 				n_strong_lines, 
 				n_weak_lines_in_continuum, 
-				line_data_chunk[np.sum(strong_line_mask_part,axis=0) > 0], # strong lines union
+				#line_data_chunk[np.sum(strong_line_mask_part,axis=0) > 0], # strong lines union
+				strong_lines_union_chunk[:line_data_chunk.size],
 				pseudo_continuum_contribution
 			)
 			_lgr.debug('strong lines and continuum data outputted')

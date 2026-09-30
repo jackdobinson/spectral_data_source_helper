@@ -205,6 +205,21 @@ def logical_or(
 	for i in prange(out.shape[0]):
 		out[i] = (a[i] | b[i])
 
+@njit(parallel=False)
+def select_if_any( # 
+	a : np.ndarray, # [N,M]
+	v : np.ndarray, # [N]
+	out : np.ndarray, #[N]
+) -> int:
+	n = 0
+	for i in range(a.shape[0]):
+		for j in range(a.shape[1]):
+			if a[i,j]:
+				out[i] = v[i]
+				n += 1
+				break
+	return n
+
 
 @njit(parallel=PARALLEL)
 def count_true_1d(
