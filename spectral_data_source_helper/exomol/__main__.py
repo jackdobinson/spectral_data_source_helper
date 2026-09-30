@@ -319,6 +319,8 @@ def action_calc_continuum(
 			dir=output_dir
 		)
 		
+		progress_fpath.parent.mkdir(parents=True, exist_ok=True)
+		
 		dt_start = dt.datetime.now()
 		dt_split_2 = dt_start
 		
