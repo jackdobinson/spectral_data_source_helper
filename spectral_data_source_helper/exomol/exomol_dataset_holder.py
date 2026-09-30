@@ -1422,7 +1422,7 @@ class ExomolDatasetHolder:
 	
 		n_weak_indices = np.zeros((T.size,), dtype=int)
 		
-		strong_lines_union_chunk = np.empty((chunk_size,), dtype=self.line_data_dtype)
+		#strong_lines_union_chunk = np.empty((chunk_size,), dtype=self.line_data_dtype)
 		
 		#slu_view = np.lib.recfunctions.structured_to_unstructured(
 		#	strong_lines_union_chunk[ldc_struct_names],
