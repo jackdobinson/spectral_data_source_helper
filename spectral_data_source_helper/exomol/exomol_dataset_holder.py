@@ -1575,7 +1575,6 @@ class ExomolDatasetHolder:
 				n_strong_lines, 
 				n_weak_lines_in_continuum, 
 				line_data_chunk[any_strong_line_mask_part], # strong lines union
-				strong_lines_union_chunk[:line_data_chunk.size],
 				pseudo_continuum_contribution
 			)
 			_lgr.debug('strong lines and continuum data outputted')
