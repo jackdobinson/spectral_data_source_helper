@@ -121,6 +121,19 @@ def set_where(
 		if mask[i]:
 			out[i] = source[i]
 
+@njit(parallel=False)
+def set_where_packed(
+	source : np.ndarray,
+	mask : np.ndarray,
+	out : np.ndarray
+) -> int:
+	j = 0
+	for i in range(out.shape[0]):
+		if mask[i]:
+			out[j] = source[i]
+			j += 1
+	return j
+
 @njit(parallel=PARALLEL)
 def set_where_scalar(
 	value,
@@ -205,21 +218,17 @@ def logical_or(
 	for i in prange(out.shape[0]):
 		out[i] = (a[i] | b[i])
 
-@njit(parallel=False)
-def select_if_any( # 
-	a : np.ndarray, # [N,M]
-	v : np.ndarray, # [N]
-	out : np.ndarray, #[N]
-) -> int:
-	n = 0
-	for i in range(a.shape[0]):
+@njit(parallel=PARALLEL)
+def logical_or_2d(
+	a : np.ndarray,
+	out : np.ndarray,
+):
+	for i in prange(out.shape[0]):
+		out[i] = False
 		for j in range(a.shape[1]):
 			if a[i,j]:
-				out[i] = v[i]
-				n += 1
+				out[i] = True
 				break
-	return n
-
 
 @njit(parallel=PARALLEL)
 def count_true_1d(

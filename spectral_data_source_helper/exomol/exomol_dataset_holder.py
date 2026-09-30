@@ -1411,6 +1411,7 @@ class ExomolDatasetHolder:
 		boltz_pop_ratio = np.empty((T.size, chunk_size,), dtype=float)
 		
 		strong_line_mask = np.empty((T.size, chunk_size,), dtype=bool)
+		any_strong_line_mask = np.empty((chunk_size,), dtype=bool)
 		weak_line_mask = np.empty((T.size, chunk_size,), dtype=bool)
 		line_strengths_at_temp = np.empty((T.size, chunk_size,), dtype=float)
 		
@@ -1446,6 +1447,7 @@ class ExomolDatasetHolder:
 			chunk_slice = slice(None, line_data_chunk.size)
 			
 			strong_line_mask_part = strong_line_mask[:, chunk_slice]
+			any_strong_line_mask_part = any_strong_line_mask[chunk_slice]
 			stimulated_emission_ratio_part = stimulated_emission_ratio[:,chunk_slice]
 			boltz_pop_ratio_part = boltz_pop_ratio[:,chunk_slice]
 			line_strengths_at_temp_part = line_strengths_at_temp[:, chunk_slice]
@@ -1554,6 +1556,13 @@ class ExomolDatasetHolder:
 				pcc_view
 			)
 			
+			spectral_data_source_helper.calc.numba.logical_or_2d(
+				strong_line_mask_part,
+				out=any_strong_line_mask_part
+			)
+			
+			#spectral_data_source_helper.calc.numba.set_where_packed(
+			#	source = 
 			
 			#n_strong_lines_union = spectral_data_source_helper.calc.numba.select_if_any(
 			#	strong_line_mask_part,
@@ -1565,7 +1574,7 @@ class ExomolDatasetHolder:
 				line_data_chunk.size,
 				n_strong_lines, 
 				n_weak_lines_in_continuum, 
-				#line_data_chunk[np.sum(strong_line_mask_part,axis=0) > 0], # strong lines union
+				line_data_chunk[any_strong_line_mask_part], # strong lines union
 				strong_lines_union_chunk[:line_data_chunk.size],
 				pseudo_continuum_contribution
 			)
