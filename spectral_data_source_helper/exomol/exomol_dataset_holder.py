@@ -1556,7 +1556,7 @@ class ExomolDatasetHolder:
 				pcc_view
 			)
 			
-			spectral_data_source_helper.calc.numba.logical_or_2d(
+			spectral_data_source_helper.calc.numba.logical_or_2d_T(
 				strong_line_mask_part,
 				out=any_strong_line_mask_part
 			)

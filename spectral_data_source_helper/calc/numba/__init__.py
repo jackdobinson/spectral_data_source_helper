@@ -219,15 +219,15 @@ def logical_or(
 		out[i] = (a[i] | b[i])
 
 @njit(parallel=PARALLEL)
-def logical_or_2d(
-	a : np.ndarray,
-	out : np.ndarray,
+def logical_or_2d_T(
+	a : np.ndarray, #[M,N]
+	out : np.ndarray, #[N]
 ):
-	for i in prange(out.shape[0]):
-		out[i] = False
-		for j in range(a.shape[1]):
+	for j in range(a.shape[1]):
+		out[j] = False
+		for i in prange(a.shape[0]):
 			if a[i,j]:
-				out[i] = True
+				out[j] = True
 				break
 
 @njit(parallel=PARALLEL)
