@@ -206,8 +206,48 @@ def load():
 
 load()
 
-add('m0', tuple()) # m0 seems to be the same as 'a0' but used in air broadening files
-add('a0', tuple())
+# Codes are in the *.def files for specific molecules, and technically there are no "universal" codes. However
+# See table 13 in [the 2024 release paper](https://www.researchgate.net/publication/380007184_The_2024_Release_of_the_Exomol_Database_Molecular_Line_Lists_for_Exoplanetand_Other_Hot_Atmospheres)
+# and footnotes of table 16 of [this paper](https://arxiv.org/html/1603.05890v3#S5.SS6)
+#
+# The codes will change based upon what the *.def file contains. However, some
+# *.def files are not complete they are missing the quantum number set codes.
+# Therefore, we will assume a set of quantum numbers at this point.
+#
+# Technically, the exact quantum numbers represented are based upon a 
+# VAMDC-aligned taxonomy system to classify a molecule's structural physics.
+# So which quantum numbers are available, actually depends upon the *.def file
+# as well. The [exomol quantum cases documentation](https://www.exomol.com/data/quantum-cases/)
+# has some information on what quantum numbers are available, however it explicity
+# states that the *.def files should contain the information in case they use
+# non-standard quantum numbers.
+#
+# Therefore, each quantumn number set is actually specific to the *.def file, and
+# any fallbacks should account for the quantum case of the molecule.
+# 
+# What I have done here is be very lazy and not done that at all. I have just 
+# shoved all the cases into the same dictionary and hoped that they worked fine.
+#
+# Also, the "mX" quantumn number sets are fundamentally different than the 
+# others. They use |m| in place of J" as the first quantum number entry of a 
+# row in the *.broad files. This means that I need to add an extra piece of data
+# to the transitions, a |m| value.
+#
+# m is defined as follows:
+#   * m = -J" for P-branch transitions (lose exactly 1 angular momentum, J'=J"-1)
+#   * m = J" for Q-branch transitions (no angular momentum gain, J'=J")
+#   * m = J"+1 for R-branch transitions (gain exactly 1 anglular momentum, J'=J"+1)
+#   * m is undefined in all other cases (probably implemented as set to NAN)
+#
+# This means I need to re-do how I handle the broadening parameters.
+#
+# TODO: Re-do how broadening lookup is handled to be consistent with the above
+
+add('a0', tuple()) # J"
+add('a1', tuple()) # J", K"
+add('a5', tuple()) # J", J', Ka", Kc", Ka', Kc' 
+add('m0', tuple()) # |m|
+add('m1', tuple()) # |m|, K"'
 
 """
 print(f'{qn_set=}')
