@@ -5,7 +5,6 @@ import json
 import datetime as dt
 
 from spectral_data_source_helper.utils import fetch
-from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
 from spectral_data_source_helper.cfg.const import (
 	PKG_CACHE,
 )
@@ -30,6 +29,10 @@ from .exomol_index_types import (
 )
 
 from .exomol_dataset_holder import ExomolDatasetHolder
+
+import spectral_data_source_helper.cfg.log as logging
+_lgr = logging.getLogger(__name__)
+_lgr.setLevel(logging.INFO)
 
 
 def exomol_all_mol_formulas() -> tuple[str,...]:

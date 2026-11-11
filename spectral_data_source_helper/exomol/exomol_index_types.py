@@ -15,7 +15,7 @@ import numpy as np
 #import broad_file_manager
 import spectral_data_source_helper.utils.fetch as fetch
 import spectral_data_source_helper.utils.cfmt as cfmt
-from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
+
 from spectral_data_source_helper.cfg.const import (
 	PKG_CACHE,
 )
@@ -29,6 +29,10 @@ from .cfg.const import (
 )
 
 from . import qn_set_manager
+
+import spectral_data_source_helper.cfg.log as logging
+_lgr = logging.getLogger(__name__)
+_lgr.setLevel(logging.INFO)
 
 
 class ExomolIsotopeDefNotFoundError(Exception):
@@ -110,7 +114,6 @@ class ExomolStatesInfo:
 				)
 			)
 		_lgr.debug(f'{dtype=}')
-		#print(f'{dtype=}')
 		return np.dtype(dtype)
 		
 	def get_states_field_widths(self) -> list[int,...]:
@@ -173,8 +176,47 @@ class ExomolQuantumNumberSet:
 	
 	def __post_init__(self):
 		self.quantum_numbers = tuple(self.quantum_numbers)
+	
+	def register_set(self, quantum_case_label : str, mol_formula : str, iso_formula : str, broad_gas_name : str):
+		"""
+			Registers the quantum number set with the `qn_set_manager` system.
+			
+			The "code" -> "quantum number set" relations are supposed to be defined completely within the
+			*.def files. However sometimes the *.def files do not have entries for a broadening gas (e.g. "air"
+			which was added later and the *.def files were not updated). Additionally, some *.def files are
+			malformed and do not have some entries they are supposed to have.
+			
+			Therefore, instead of storing the codes an isotopologue uses when reading its *.def file, we must
+			have fallback values for the cases where the *.def files are malformed. In these cases we must make
+			some amount of assumption. I will make the assumption that the "closer" isotopologue A is to
+			isopoologue B, the better the match between the codes for A and B.
+			
+			The "closeness" is in the order of `quantum_case_label` ,`mol_formula`, `iso_formula`, `broad_gas_name`.
+			
+			That means we must have fallbacks at each level of specificity so we can use the closest one. However,
+			I cannot populate these by hand (as it would take ages) so I will populate them on a "first come first serve"
+			basis. If a code is not found for a specific isotopologue + broadening gas, we should walk up the levels
+			until we find a matching code. If no matching code is ever found, throw and error.
+			
+			# ARGUMENTS #
+				
+				quantum_case_label : str
+					A label from [the exomol quantum number cases](https://www.exomol.com/data/quantum-cases/) that classifies
+					the physical geometry and coupling schemes of a the isotopologue we are registering the (code, quantum number set) pair for.
+				
+				mol_formula : str
+					The molecular formula for the isotopologue we are registering the (code, quantum number set) pair for.
+				
+				iso_formula : str
+					The isotopologue formula we are registering the (code, quantum number set) pair for.
+				
+				broad_gas_name : str
+					The broadening gas we are registering the (code, quantum number set) pair for.
+		"""
 		
-		qn_set_manager.add(self.code, self.quantum_numbers)
+		qn_set_manager.register_set(quantum_case_label, mol_formula, iso_formula, broad_gas_name, self.code, self.quantum_numbers)
+		
+		
 
 @dc.dataclass
 class ExomolBroadener:
@@ -196,6 +238,10 @@ class ExomolBroadener:
 		
 		self.quantum_number_sets = tuple(ExomolQuantumNumberSet(**x) for x in self.quantum_number_sets)
 	
+	def register_quantum_number_sets(self, quantum_case_label : str, mol_formula : str, iso_formula : str):
+		for qn_set in self.quantum_number_sets:
+			qn_set.register_set(quantum_case_label, mol_formula, iso_formula, self.broad_gas_name)
+	
 
 @dc.dataclass
 class ExomolBroadInfo:
@@ -212,6 +258,10 @@ class ExomolBroadInfo:
 				setattr(self, field.name, kwargs.pop(field.name))
 		#print(f'{kwargs=}')
 		self.broadeners = tuple(ExomolBroadener(broad_gas_name=k,**v) for k,v in kwargs.items())
+	
+	def register_broadener_quantum_number_sets(self, quantum_case_label : str, mol_formula : str, iso_formula : str):
+		for broadener in self.broadeners:
+			broadener.register_quantum_number_sets(quantum_case_label, mol_formula, iso_formula)
 			
 
 @dc.dataclass
@@ -235,6 +285,9 @@ class ExomolIsotopeDef:
 		self.dataset = ExomolDataset(**self.dataset)
 		self.broad = ExomolBroadInfo(**self.broad)
 		self.partition_function = ExomolPartitionFunctionInfo(**self.partition_function)
+		
+		self.broad.register_broadener_quantum_number_sets(self.dataset.states.quantum_case_label, self.mol_formula, self.isotopologue.iso_formula)
+				
 	
 	def datafile_prefix(self):
 		return f'{self.isotopologue.iso_slug}__{self.dataset.name}'

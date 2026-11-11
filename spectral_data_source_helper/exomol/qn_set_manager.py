@@ -1,210 +1,7 @@
 """
 Quantum number sets are scattered aroung EXOMOL. Therefore put them here as I encounter them and they will be saved to the cache
 """
-import pickle
 
-import numpy as np
-from spectral_data_source_helper.cfg.const import (
-	PKG_CACHE,
-)
-
-#from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
-ID_TYPE = np.iinfo(np.int64)
-
-MAX_QN_IN_SET = 16
-
-QN_SET_FILE = PKG_CACHE / "exomol.com/db/quantum_number_sets.pkl"
-QN_SET_FILE_TEMP = PKG_CACHE / "exomol.com/db/quantum_number_sets.pkl~"
-
-qn_set : dict[str, tuple[str,...]] = dict()
-
-qn_id_map : dict[str,int] = dict() # mapping between quantum number name and ID
-qn_set_id_map : dict[str,int] = dict() # mapping between quantum number set name and ID
-
-n_qn_set_ids = 0
-qn_set_ids = np.full((8,2), fill_value=ID_TYPE.max, dtype=ID_TYPE.dtype)
-
-qn_set_id_array = np.zeros((8,MAX_QN_IN_SET), dtype=ID_TYPE.dtype)
-qn_set_n_id_array = np.zeros((8,), dtype=int)
-
-def get_qn_set_id(qn_set_name : str):
-	assert len(qn_set_name) == 2, "Ensure we have 2 characters in the code"
-	
-	qn_code_ascii = qn_set_name.encode('ascii')
-	
-	ascii_numeral_start = 48 # '0'
-	ascii_numeral_end = 58 # '9' + 1
-	ascii_lowercase_start = 97 # 'a'
-	ascii_lowercase_end = 123 # 'z' + 1
-	
-	assert ascii_lowercase_start <= qn_code_ascii[0] and  qn_code_ascii[0] < ascii_lowercase_end, f"First character must be a lowercase letter: {qn_code_ascii}"
-	assert ascii_numeral_start <= qn_code_ascii[1] and  qn_code_ascii[1] < ascii_numeral_end, f"Second character must be a numeral: {qn_code_ascii}"
-	
-	id = qn_set_id_map.get(qn_set_name,None)
-	if id is not None:
-		return id
-	
-	
-	id_parts = (
-		qn_code_ascii[0] - ascii_lowercase_start,
-		qn_code_ascii[1] - ascii_numeral_start
-	)
-	
-	power_2 = (
-		int(np.ceil(np.log2(ascii_lowercase_end - ascii_lowercase_start))),
-		int(np.ceil(np.log2(ascii_numeral_end - ascii_numeral_start))),
-	)
-	
-	id = 0
-	n = 0
-	for x, y in zip(id_parts, power_2):
-		id += x*(2**n)
-		n += y
-	
-	assert n <= ID_TYPE.bits, "id must not take up more than 64 bits"
-	
-	return id
-
-
-def get_qn_id(qn_name : str):
-	qn_name_ascii = qn_name.encode('ascii')
-	
-	ascii_double_quote = 34 # '"'
-	ascii_single_quote = 39 # '\''
-	ascii_numeral_start = 48 # '0'
-	ascii_numeral_end = 58 # '9' + 1
-	ascii_uppercase_start = 65 # 'A'
-	ascii_uppercase_end = 90 # 'Z' + 1
-	ascii_lowercase_start = 97 # 'a'
-	ascii_lowercase_end = 123 # 'z' + 1
-	
-	qn_name_ascii_len = len(qn_name_ascii)
-	
-	assert qn_name_ascii[-1] in (ascii_double_quote, ascii_single_quote), f"Last character must be a single or double quote: {qn_name_ascii}"
-	for i in range(qn_name_ascii_len-1):
-		assert (
-			(ascii_numeral_start <= qn_name_ascii[i] and  qn_name_ascii[i] < ascii_numeral_end)
-			or (ascii_uppercase_start <= qn_name_ascii[i] and  qn_name_ascii[i] < ascii_uppercase_end)
-			or (ascii_lowercase_start <= qn_name_ascii[i] and  qn_name_ascii[i] < ascii_lowercase_end)
-		), f"All characters except the final one must be a numeral or lowercase letter: {qn_name_ascii}"
-	
-	id = qn_id_map.get(qn_name,None)
-	if id is not None:
-		return id
-	
-	ascii_numeral_n = (ascii_numeral_end - ascii_numeral_start) 
-	ascii_uppercase_n = (ascii_uppercase_end - ascii_uppercase_start)
-	ascii_lowercase_n = (ascii_lowercase_end - ascii_lowercase_start)
-	
-	ascii_part_n_states = (
-		ascii_numeral_n
-		+ ascii_uppercase_n
-		+ ascii_lowercase_n
-	)
-	
-	id_parts = (
-		0 if qn_name_ascii[-1] == ascii_double_quote else 1,
-		*(
-			(x - ascii_numeral_start) if (x < ascii_numeral_end) else ((ascii_numeral_n+(x - ascii_uppercase_start) if (x < ascii_uppercase_end) else ((ascii_numeral_n+ascii_uppercase_n)+(x-ascii_lowercase_start)))) for x in qn_name_ascii[:-1]
-		)
-	)
-	
-	power_2 = (
-		1,
-		*([int(np.ceil(np.log2(ascii_part_n_states)))] * (qn_name_ascii_len-1))
-	)
-	
-	id = 0
-	n = 0
-	for x, y in zip(id_parts, power_2):
-		id += x*(2**n)
-		n += y
-	
-	assert n <= ID_TYPE.bits, "id must not take up more than 64 bits"
-	
-	return id
-	
-
-def get_qn_set_ids(qn_set_id : int) -> tuple[int,np.ndarray]:
-	i = np.searchsorted(qn_set_ids[:,0], qn_set_id)
-	if qn_set_ids[i,0] != qn_set_id:
-		raise RuntimeError(f'{qn_set_id=} not found in {qn_set_ids=}')
-	
-	j = qn_set_ids[i,1]
-	
-	return qn_set_n_id_array[j], qn_set_id_array[j]
-
-
-def add(set_name : str, qn_names : tuple[str,...]):
-
-	if len(qn_names) > MAX_QN_IN_SET:
-		raise RuntimeError(f'Number of quantum numbers in set {set_name} exceeded maximum ({len(qn_names)} > {MAX_QN_IN_SET}). Update MAX_QN_IN_SET in {__file__}')
-	
-	if set_name in qn_set:
-		assert len(qn_set[set_name]) == len(qn_names), f'All definitions of Quantum Number set "{set_name}" must be equivalent.'
-		assert all(x in qn_set[set_name] for x in qn_names), f'All definitions of Quantum Number set "{set_name}" must be equivalent.'
-		assert all(x in qn_names for x in qn_set[set_name]), f'All definitions of Quantum Number set "{set_name}" must be equivalent.'
-	else:
-		qn_set[set_name] = qn_names
-		qn_set_id_map[set_name] = get_qn_set_id(set_name)
-		for qn_name in qn_names:
-			qn_id_map[qn_name] = get_qn_id(qn_name)
-		
-		update_set_ids()
-		save()
-
-def update_set_ids():
-	global qn_set_ids, n_qn_set_ids, qn_set_id_array, qn_set_n_id_array
-	
-	m_qn_set_ids = len(qn_set_id_map)
-	if m_qn_set_ids > n_qn_set_ids:
-		if m_qn_set_ids > qn_set_ids.shape[0]:
-			new_qn_set_ids = np.zeros((2*qn_set_ids.shape[0], *qn_set_ids.shape[1:]), dtype=ID_TYPE.dtype)
-			new_qn_set_ids[:n_qn_set_ids] = qn_set_ids
-			
-			new_qn_set_id_array = np.zeros((2*qn_set_id_array.shape[0], *qn_set_id_array.shape[1:]), dtype=ID_TYPE.dtype)
-			new_qn_set_id_array[:n_qn_set_ids] = qn_set_id_array
-			
-			new_qn_set_n_id_array = np.zeros((2*qn_set_n_id_array.shape[0],), dtype=int)
-			new_qn_set_n_id_array[:n_qn_set_ids] = qn_set_n_id_array
-			
-			qn_set_ids = new_qn_set_ids
-			qn_set_id_array = new_qn_set_id_array
-			qn_set_n_id_array = new_qn_set_n_id_array
-	
-		for qn_set_name, qn_set_id in qn_set_id_map.items():
-			if qn_set_id not in qn_set_ids[:,0]:
-				qn_set_ids[n_qn_set_ids] = (qn_set_id, n_qn_set_ids)
-				
-				qn_set_n_id_array[n_qn_set_ids] = len(qn_set[qn_set_name])
-				qn_set_id_array[n_qn_set_ids, :qn_set_n_id_array[n_qn_set_ids]] = sorted(get_qn_id(x) for x in qn_set[qn_set_name])
-				
-				n_qn_set_ids += 1
-	
-		qn_set_ids.sort(axis=0)
-
-def save():
-	QN_SET_FILE_TEMP.parent.mkdir(parents=True, exist_ok=True)
-	try:
-		with open(QN_SET_FILE_TEMP, 'wb') as f:
-			pickle.dump(
-				(qn_set, qn_set_id_map, qn_id_map), 
-				f
-			)
-	except Exception as e:
-		raise e
-	else:
-		QN_SET_FILE_TEMP.replace(QN_SET_FILE)
-
-def load():
-	global qn_set, qn_set_id_map, qn_id_map
-	
-	if QN_SET_FILE.exists():
-		with open(QN_SET_FILE, 'rb') as f:
-			qn_set, qn_set_id_map, qn_id_map = pickle.load(f)
-			update_set_ids()
-
-load()
 
 # Codes are in the *.def files for specific molecules, and technically there are no "universal" codes. However
 # See table 13 in [the 2024 release paper](https://www.researchgate.net/publication/380007184_The_2024_Release_of_the_Exomol_Database_Molecular_Line_Lists_for_Exoplanetand_Other_Hot_Atmospheres)
@@ -243,20 +40,258 @@ load()
 #
 # TODO: Re-do how broadening lookup is handled to be consistent with the above
 
-add('a0', tuple()) # J"
-add('a1', tuple()) # J", K"
-add('a5', tuple()) # J", J', Ka", Kc", Ka', Kc' 
-add('m0', tuple()) # |m|
-add('m1', tuple()) # |m|, K"'
 
-"""
-print(f'{qn_set=}')
-print(f'{qn_set_id_map=}')
-print(f'{qn_id_map=}')
-print(f'{qn_set_ids=}')
-print(f'{qn_set_id_array=}')
-print(f'{qn_set_n_id_array=}')
-"""
+import pickle
+
+#import numpy as np
+from spectral_data_source_helper.cfg.const import (
+	PKG_CACHE,
+)
+
+import spectral_data_source_helper.cfg.log as logging
+_lgr = logging.getLogger(__name__)
+_lgr.setLevel(logging.INFO)
+
+
+QN_SET_FILE = PKG_CACHE / "exomol.com/db/quantum_number_sets.pkl"
+QN_SET_FILE_TEMP = PKG_CACHE / "exomol.com/db/quantum_number_sets.pkl~"
+
+
+qn_set_store : dict[str, dict[str, dict[str, dict[str, dict[str, tuple[str,...]]]]]] = dict()
+
+DEFAULT_KEY = 'DEFAULT'
+
+def include_first_qn_in_qn_names(qn_set_name : str, qn_names : tuple[str,...]) -> tuple[str,...]:
+	"""
+		`qn_names` are the names of the quantum numbers that `qn_set_name` specifies. However, the *.def files
+		always leave out the first quantum number 'J"' in most cases or '|m|' for any `qn_set_name` that starts with "m".
+	"""
+	
+	if qn_set_name[0] == 'm':
+		return ('|m|', *qn_names)
+	else:
+		return ('J"', *qn_names)
+	
+
+def register_set(
+		quantum_case_label : str | None, # Set to `DEFAULT_KEY` to only set defaults for this value then return (if they are not already set)
+		mol_formula : str | None, # Set to `DEFAULT_KEY` to only set defaults for this value then return (if they are not already set)
+		iso_formula : str | None, # Set to `DEFAULT_KEY` to only set defaults for this value then return (if they are not already set)
+		broad_gas_name : str | None, # Set to `DEFAULT_KEY` to only set defaults for this value then return (if they are not already set)
+		qn_set_name : str, 
+		qn_names : tuple[str,...]
+):
+	"""
+		Registers the quantum number set with the `qn_set_manager` system.
+		
+		The `qn_set_name` -> `qn_names` relations are supposed to be defined completely within the
+		*.def files. However sometimes the *.def files do not have entries for a broadening gas (e.g. "air"
+		which was added later and the *.def files were not updated). Additionally, some *.def files are
+		malformed and do not have some entries they are supposed to have.
+		
+		Therefore, instead of storing the codes an isotopologue uses when reading its *.def file, we must
+		have fallback values for the cases where the *.def files are malformed. In these cases we must make
+		some amount of assumption. I will make the assumption that the "closer" isotopologue A is to
+		isopoologue B, the better the match between the codes for A and B.
+		
+		The "closeness" is in the order of `quantum_case_label` ,`mol_formula`, `iso_formula`, `broad_gas_name`.
+		
+		That means we must have fallbacks at each level of specificity so we can use the closest one. However,
+		I cannot populate these by hand (as it would take ages) so I will populate them on a "first come first serve"
+		basis. If a code is not found for a specific isotopologue + broadening gas, we should walk up the levels
+		until we find a matching code. If no matching code is ever found, throw and error.
+		
+		# ARGUMENTS #
+			
+			quantum_case_label : str
+				A label from [the exomol quantum number cases](https://www.exomol.com/data/quantum-cases/) that classifies
+				the physical geometry and coupling schemes of a the isotopologue we are registering the (code, quantum number set) pair for.
+			
+			mol_formula : str
+				The molecular formula for the isotopologue we are registering the (code, quantum number set) pair for.
+			
+			iso_formula : str
+				The isotopologue formula we are registering the (code, quantum number set) pair for.
+			
+			broad_gas_name : str
+				The broadening gas we are registering the (code, quantum number set) pair for.
+			
+			qn_set_name : str
+				The name of the quantum number set (`code`) that we are registering.
+			
+			qn_names : tuple[str,...]
+				The names of the quantum numbers in the set we are registering.
+	"""
+	_lgr.debug(f'{quantum_case_label=} {mol_formula=} {iso_formula=} {broad_gas_name=} {qn_set_name=} {qn_names=}')
+	
+	qn_names = include_first_qn_in_qn_names(qn_set_name, qn_names)
+	
+	level_values = (quantum_case_label, mol_formula, iso_formula, broad_gas_name)
+	d = qn_set_store
+	
+	for level_value in level_values:
+		d.setdefault(DEFAULT_KEY, dict()).setdefault(qn_set_name, qn_names)
+		
+		if level_value is DEFAULT_KEY: # Do not bother decending if a level_value is `DEFAULT_KEY`, we have set the default (if it required setting) so just return.
+			return
+			
+		d = d.setdefault(level_value, dict())
+	
+	d[qn_set_name] = qn_names
+	
+	save()
+	
+
+def get_sets_for_broad_gas_name(
+		quantum_case_label : str, 
+		mol_formula : str, 
+		iso_formula : str, 
+		broad_gas_name : str, 
+) -> tuple[str,...]:
+	
+	
+	level_values = (quantum_case_label, mol_formula, iso_formula, broad_gas_name)
+	_lgr.debug(f'{level_values=}')
+	
+	default_stack = [qn_set_store[DEFAULT_KEY], None, None, None, None]
+	d_stack = [qn_set_store, None, None, None, None]
+	d = d_stack[0]
+	
+	i = 0
+	for level_value in level_values:
+		d = d_stack[i].get(level_value, None)
+		
+		_lgr.debug(f'{i=} {level_value=} {d=}')
+		if d is not None:
+			default_stack[i+1] = dict(default_stack[i])
+			default_stack[i+1].update(d.get(DEFAULT_KEY, {}))
+			d_stack[i+1] = d
+			i += 1
+		else:
+			# rewind stack until we find a match
+			while (i >= 0) and (d is None):
+				
+				d = default_stack[i]
+				_lgr.debug(f'REWIND: {i=} {d=}')
+				i -= 1
+			break
+
+	if d is None:
+		# There are not entries or defaults for us to get so throw an error
+		raise RuntimeError(f'Could not find quantum number sets for specifiers {level_values}')
+	
+	return d
+
+
+def get_set(
+		quantum_case_label : str, 
+		mol_formula : str, 
+		iso_formula : str, 
+		broad_gas_name : str, 
+		qn_set_name : str, 
+) -> tuple[str,...]:
+	
+	d = get_sets_for_broad_gas_name(quantum_case_label, mol_formula, iso_formula, broad_gas_name)
+	result = d.get(qn_set_name)
+	_lgr.debug(f'{result=}')
+	
+	if result is None:
+		raise RuntimeError(f'Could not find a quantum number set with {qn_set_name=} for specifiers {(quantum_case_label, mol_formula, iso_formula, broad_gas_name)}')
+	
+	return result
+
+
+def update_leaf_dict(
+		leaf_dict : dict[str, tuple[str,...]], 
+		new_dict : dict[str, tuple[str,...]], 
+		specifiers : tuple[str,...] = tuple()
+):
+	"""
+		Given `leaf_dict` and `new_dict` update `leaf_dict` with members of `new_dict`. 
+		Raise an error if any shared keys in `leaf_dict` and `new_dict` do not share the same value.
+	"""
+	for qn_set_name, qn_names in new_dict.items():
+		z = leaf_dict.get(qn_set_name, None)
+		
+		if z is None: # If `qn_set_name` was not in the dictionary to be updated, then just set the new value
+			leaf_dict[qn_set_name] = qn_names
+		
+		elif len(z) != len(qn_names) or any(a!=b for a,b in zip(z,qn_names)): # Otherwise, check that the new and old values agree
+			raise RuntimeError(f'When updating quantum number sets, have inconsistent defaults for {qn_set_name=} with {specifiers=}. Expected {qn_names=} but {z} found.')
+
+def update_sets(
+		new_qn_set_dict : dict[str, dict[str, dict[str, dict[str, dict[str, tuple[str,...]]]]]]
+):
+	"""
+		Update `qn_set_store` with the values in `new_qn_set_dict`, however if they both have entries they must agree. Throw an error if both dictionaries have entries that disagree.
+	"""	
+	x = [qn_set_store, None, None, None, None]
+	
+	for qcl, qcl_dict in new_qn_set_dict.items():
+		x[1] = x[0].setdefault(qcl, dict())
+		
+		if qcl == DEFAULT_KEY:
+			update_leaf_dict(x[1], qcl_dict)
+			continue
+			
+		for mol, mol_dict in qcl_dict.items():
+			x[2] = x[1].setdefault(mol, dict())
+			
+			if mol == DEFAULT_KEY:
+				update_leaf_dict(x[2], mol_dict)
+				continue
+			
+			for iso, iso_dict in mol_dict.items():
+				x[3] = x[2].setdefault(iso, dict())
+				
+				if iso == DEFAULT_KEY:
+					update_leaf_dict(x[3], iso_dict)
+					continue
+				
+				for bgn, bgn_dict in iso_dict.items():
+					x[4] = x[3].setdefault(bgn, dict())
+					
+					if bgn == DEFAULT_KEY:
+						update_leaf_dict(x[4], bgn_dict)
+						continue
+					
+					update_leaf_dict(x[4], bgn_dict)
+	return
+
+def save():
+	QN_SET_FILE_TEMP.parent.mkdir(parents=True, exist_ok=True)
+	try:
+		with open(QN_SET_FILE_TEMP, 'wb') as f:
+			pickle.dump(
+				(qn_set_store,),
+				f
+			)
+	except Exception as e:
+		raise e
+	else:
+		QN_SET_FILE_TEMP.replace(QN_SET_FILE)
+
+def load():
+	
+	if QN_SET_FILE.exists():
+		with open(QN_SET_FILE, 'rb') as f:
+			qn_set_store_temp, = pickle.load(f)
+		
+		_lgr.debug(f'{qn_set_store_temp=}')
+		
+		update_sets(qn_set_store_temp)
+
+
+_register_default_target = (DEFAULT_KEY, DEFAULT_KEY, DEFAULT_KEY, DEFAULT_KEY)
+register_set(*_register_default_target, 'a0', tuple()) # J"
+register_set(*_register_default_target, 'a1', ('K"',)) # J", K"
+register_set(*_register_default_target, 'a5', ("J'", 'Ka"', 'Kc"', "Ka'", "Kc'")) # J", J', Ka", Kc", Ka', Kc' 
+register_set(*_register_default_target, 'm0', tuple()) # |m|
+register_set(*_register_default_target, 'm1', ('K"',)) # |m|, K"'
+
+_lgr.debug(f'{qn_set_store=}')
+
+load()
 
 
 

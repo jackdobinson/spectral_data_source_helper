@@ -4,7 +4,6 @@ import argparse as ap
 from typing import Literal
 from pathlib import Path
 import datetime as dt
-import logging
 
 import numpy as np
 
@@ -15,7 +14,6 @@ import spectral_data_source_helper.utils.structured_array
 import spectral_data_source_helper.calc.pseudo_continuum
 import spectral_data_source_helper.calc.spec
 
-from spectral_data_source_helper.cfg.log import pkg_logger, progress_lgr
 
 from .cfg.const import (
 	CHUNK_SIZE,
@@ -35,6 +33,10 @@ from .args.iterative_conversion_options import (
 	IterativeConversionOptions
 )
 
+from spectral_data_source_helper.cfg.log import progress_lgr
+import spectral_data_source_helper.cfg.log as logging
+_lgr = logging.getLogger(__name__)
+_lgr.setLevel(logging.INFO)
 
 
 
@@ -57,7 +59,7 @@ def action_download(
 def action_list(
 		dataset_holders : list[ExomolDatasetHolder],
 ):
-	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	_lgr.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	print(f'The following {len(dataset_holders)} datasets are selected:')
 	for ds_holder in dataset_holders:
 		print(f'  {ds_holder.short_info_str}')
@@ -97,7 +99,7 @@ def action_states(
 		stop : int = 10,
 		step : int = 1,
 ):
-	pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	_lgr.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	slice_to_print = slice(start, None if stop == 0 else (stop+1), step)
 	for ds_holder in dataset_holders:
 		print(f'States for dataset {ds_holder.short_info_str}')
@@ -129,7 +131,7 @@ def action_trans(
 ):
 	import spectral_data_source_helper.cfg.log # for later
 	
-	#pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	#_lgr.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
 	for ds_holder in dataset_holders:
 		print(f'Transitions for dataset {ds_holder.short_info_str}')
@@ -214,7 +216,7 @@ def action_calc_line_data(
 		dataset_holders : list[ExomolDatasetHolder],
 		chunk_size : int = 1_000_000,
 ):
-	pkg_logger.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	_lgr.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
 	for ds_holder in dataset_holders:
 		with open(REPO_LOCAL / f'{ds_holder.datafile_prefix}.lines', 'wb') as f:
@@ -247,7 +249,7 @@ def action_read_line_data(
 		if line_data_fpath.exists():
 			print(f'        line data : {line_data_fpath}')
 		else:
-			pkg_logger.error('Could not find line data file, exiting...')
+			_lgr.error('Could not find line data file, exiting...')
 			return
 		
 		
@@ -270,7 +272,7 @@ def action_read_line_data(
 		
 		
 		if line_data is None:
-			pkg_logger.error(f'Something went wrong when reading {line_data_fpath}. Exiting...')
+			_lgr.error(f'Something went wrong when reading {line_data_fpath}. Exiting...')
 			return
 		print('    Line data has the following columns:')
 		print(f'        {" | ".join(use_dtype.names)}')
@@ -291,7 +293,7 @@ def action_calc_continuum(
 		force_restart : bool = False,
 		output_dir : Path = REPO_LOCAL,
 ):
-	#pkg_logger.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
+	#_lgr.setLevel(logging.WARN) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	progress_lgr.setLevel(logging.INFO) # SET LOGGING SO WE HAVE CLEAR OUTPUT
 	
 	temperature_arr = np.array(temperature, dtype=float)
@@ -472,7 +474,7 @@ def action_read_continuum(
 ):
 	assert fname is not None, "Must have name of files to work with"
 		
-	pkg_logger.setLevel(logging.INFO)
+	_lgr.setLevel(logging.INFO)
 	progress_lgr.setLevel(logging.INFO)
 
 	line_data_slice = slice(start, None if stop==0 else stop+1, step)
@@ -504,17 +506,17 @@ def action_read_continuum(
 		if line_data_fpath.exists():
 			print(f'        line data : {line_data_fpath}')
 		else:
-			pkg_logger.error('Could not find line data file, exiting...')
+			_lgr.error('Could not find line data file, exiting...')
 			return
 		if continuum_data_fpath.exists():
 			print(f'        continuum data : {continuum_data_fpath}')
 		else:
-			pkg_logger.error('Could not find continuum data file, exiting...')
+			_lgr.error('Could not find continuum data file, exiting...')
 			return
 		if continuum_bin_fpath.exists():
 			print(f'        continuum bins : {continuum_bin_fpath}')
 		else:
-			pkg_logger.error('Could not find continuum bin file, exiting...')
+			_lgr.error('Could not find continuum bin file, exiting...')
 			return
 		
 		# Get temperature from file name
@@ -535,7 +537,7 @@ def action_read_continuum(
 			line_data = f.read()
 		
 		if line_data is None:
-			pkg_logger.error(f'Something went wrong when reading {line_data_fpath}. Exiting...')
+			_lgr.error(f'Something went wrong when reading {line_data_fpath}. Exiting...')
 			return
 		print('    Line data has the following columns:')
 		print(f'        {" | ".join(line_data.dtype.names)}')
@@ -585,7 +587,7 @@ def action_read_continuum(
 			if min_line_str_sum < (-1*eps):
 				raise RuntimeError(f'Minimum line strength sum is less than defined limit ({-1*eps}). Cannot have -ve values for line strength sums')
 			elif min_line_str_sum <= 0: 
-				pkg_logger.warn(f'Minimum line strength sum is less than zero, but larger than defined limit ({-1*eps}), setting to a small value...')
+				_lgr.warn(f'Minimum line strength sum is less than zero, but larger than defined limit ({-1*eps}), setting to a small value...')
 				continuum_data_means['line_strength_sum'][continuum_data_means['line_strength_sum'] <= 0] = eps
 		else:
 			if np.count_nonzero(continuum_data_means['line_strength_sum'] < 0) > 0:
@@ -791,10 +793,10 @@ if __name__=='__main__':
 	
 	func = arg_dict.pop('func')
 	
-	pkg_logger.info('## ARGUMENTS ##')
+	_lgr.info('## ARGUMENTS ##')
 	for k,v in arg_dict.items():
-		pkg_logger.info(f'    {k} : {v}')
-	pkg_logger.info('##-----------##')
+		_lgr.info(f'    {k} : {v}')
+	_lgr.info('##-----------##')
 	
 	
 	func(dataset_holders, **arg_dict)

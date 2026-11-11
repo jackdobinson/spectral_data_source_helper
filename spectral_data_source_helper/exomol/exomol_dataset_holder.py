@@ -32,7 +32,9 @@ from . import broad_file_manager
 from .c_compat import ConvertTransToBin32#, run_main #convert_trans_to_bin32
 
 from spectral_data_source_helper.cfg.log import progress_lgr
-from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
+import spectral_data_source_helper.cfg.log as logging
+_lgr = logging.getLogger(__name__)
+_lgr.setLevel(logging.INFO)
 
 from .datatypes import (
 	ExomolDatasetInfo,
@@ -92,7 +94,6 @@ class ExomolDatasetHolder:
 	_fallback_broad_vals : None | tuple[float,float] = None
 	emergency_broad_vals : ClassVar[tuple[float,float]] = (0.07, 0.5) # (gamma, n) to use when no other values are present (taken from PyExoCross)
 	_partition_function : None | np.ndarray = None
-	_broad_map : None | dict[str,dict[str,dict[tuple[Any,...],tuple[float,float]]]] = None
 	_possible_qn_sets : None | dict[str,list[str]] = None
 	_pseudo_continuum_contribution_dtype : None | np.dtype = None
 	_pseudo_continuum_contribution_dtype_list : None | list[tuple[str,Any],...] = None
@@ -210,7 +211,7 @@ class ExomolDatasetHolder:
 	
 	@property
 	def states_short_names(self) -> list[str]:
-		return [x.split(':')[-1] for x in self.states_dtype.names]
+		return [x.rsplit(':', 1)[-1] for x in self.states_dtype.names]
 	
 	@property
 	def states(self) -> np.ndarray:
@@ -290,12 +291,12 @@ class ExomolDatasetHolder:
 	
 	@property
 	def transition_state_names(self):
-		return (*self.lower_state_names, *self.upper_state_names)
+		return ('|m|', *self.lower_state_names, *self.upper_state_names)
 	
 	@property
 	def transition_state_quantum_number_names(self):
-		non_quantum_number_state_names = ('tau\'', 'tau"', 'E\'', 'E"')
-		return tuple(x for x in (*self.lower_state_names, *self.upper_state_names) if x not in non_quantum_number_state_names)
+		non_quantum_number_state_names = ('einstein_A', 'wavenumber', 'StateID\'', 'StateID"','g_tot\'', 'g_tot"', 'tau\'', 'tau"', 'E\'', 'E"')
+		return tuple(x for x in self.transition_state_names if x not in non_quantum_number_state_names)
 	
 	@property
 	def broad_gas_names(self) -> tuple[str,...]:
@@ -356,6 +357,7 @@ class ExomolDatasetHolder:
 	def transition_states_dtype(self) -> list[tuple[str,Any]]:
 		states_dtype = self.states_dtype
 		
+		
 		lower_state_dtype = tuple((x, y) for x,y in zip(self.lower_state_names, (z[0].type for z in states_dtype.fields.values())))
 		upper_state_dtype = tuple((x, y) for x,y in zip(self.upper_state_names, (z[0].type for z in states_dtype.fields.values())))
 		
@@ -363,6 +365,7 @@ class ExomolDatasetHolder:
 			[
 				('einstein_A', float),
 				('wavenumber', float),
+				('|m|', float), # P,Q,R branch value, always +ve, should be NAN if not a P,Q,R branch transition
 				*lower_state_dtype,
 				*upper_state_dtype,
 			],
@@ -396,21 +399,31 @@ class ExomolDatasetHolder:
 		return dtype
 	
 	@property
-	def possible_qn_sets(self) -> dict[str, list[str]]:
-		"""
-		A dictionary mapping quantum number set codes (qn_codes) to the state names they use for all qn_codes that this dataset defines quantum numbers for
-		"""
-		if self._possible_qn_sets is None:
-			transition_state_names = self.transition_state_names
-			self._possible_qn_sets = dict((k,['J"',*v]) for k,v in qn_set_manager.qn_set.items() if all(x in transition_state_names for x in v))
-			#_lgr.debug(f'{self._possible_qn_sets=}')
-		return self._possible_qn_sets
-	
-	@property
 	def broadening_data(self) -> tuple[dict[str,slice], np.ndarray, np.ndarray, np.ndarray]:
 		"""
-		Load broadening data into an array
+		Load broadening data into an array that we can use inside a `numba` function to compare with transition values quickly.
+		
+		Reads through all the *.broad files for an isotopologue and loads the data from all of them into
+		arrays. We want to quickly be able to compare quantum numbers in the *.broad files with quantum numbers of the transitions.
+		
+		Therefore, we need to get all possible quantum numbers that must be checked (i.e. all the quantum numbers in the *.broad files),
+		and mask out the quantum numbers that are not checked for a specific *.broad file entry.
+		
+		# RETURNS #
+			broad_array_gas_slices : dict[str, slice]
+				We load all the broadening data into arrays, this is a map that defines the broadeneing gas and the array slices that belong to that gas.
+			
+			broad_array : np.ndarray
+				Structured array that holds the quantum number values for broadening gasses
+			
+			broad_comp_mask : np.ndarray
+				Array that is a bit-mask. If a bit is '1' the quantum numbers in `broad_array` should be compared with the quantum numbers of the transition, if `0` they should not be compared.
+				
+			broad_values : np.ndarray
+				Array of the (gamma_GAS, temp_exp_GAS) values for each entry in the broadening gas files.
 		"""
+		
+		# Get the total number of broadening file entries, and the number of entries in each broadening file.
 		
 		# Count number of entries across all broadening files
 		n_broad_entries_dict = dict()
@@ -421,175 +434,79 @@ class ExomolDatasetHolder:
 			with open(fpath, 'r') as f:
 				for aline in f:
 					n_broad_entries_dict[bg_name] += 1
-					
+		
+		
 		total_broad_entries = sum(n_broad_entries_dict.values())
 		
+		# get the dtype of the transition states as a dictionary
 		ts_dtype_dict = dict((x,y[0].type) for x,y in self.transition_states_dtype.fields.items())
 		
+		
+		# Create empty dictionaries and arrays
+		broad_array_gas_slices = dict() # (broadening_gas_name, slice) pairs
+		
+		broad_array = np.zeros((total_broad_entries,), self.transition_states_dtype) # For each entry in the *.broad files, this holds the quantum number values to check a transition against.
+		#quantum_number_dtype = np.dtype([(k,x) for (k,x) in self.transition_states_dtype.fields.items() if k in self.transition_state_quantum_number_names])
+		#broad_array = np.zeros((total_broad_entries,), quantum_number_dtype) # For each entry in the *.broad files, this holds the quantum number values to check a transition against.
+		
+		broad_comp_mask = np.zeros((total_broad_entries, broad_array.dtype.itemsize // BYTES_DTYPE.itemsize), dtype=bool) # For each entry in the *.broad files, this is a mask that tells us if we should check a byte of the transition against a byte of the corresponding entry in `broad_array`
+		broad_values = np.zeros((total_broad_entries,2), float) # (gamma, temp_exp), the broadening values that should be used if a transition matches the values in `broad_array`
+		
+		
+		# For each broadening gas, get the array slices where its entries are stored.
 		n = 0
-		broad_array_gas_slices = dict()
 		for bg_name, bgn in n_broad_entries_dict.items():
-			broad_array_gas_slices[bg_name] = slice(n,bgn)
+			broad_array_gas_slices[bg_name] = slice(n,n+bgn)
 			n += bgn
 		
 		if 'self' not in broad_array_gas_slices:
 			broad_array_gas_slices['self'] = slice(0,0)
 		
-			
-		broad_array = np.zeros((total_broad_entries,), self.transition_states_dtype)
-		broad_comp_mask = np.zeros((total_broad_entries, broad_array.dtype.itemsize // BYTES_DTYPE.itemsize), dtype=bool) # if `True` we should compare this byte, otherwise skip it
-		broad_values = np.zeros((total_broad_entries,2), float) # (gamma, temp_exp)
-		
-		i_bg = dict()
+		_lgr.debug(f'{broad_array_gas_slices=}')
 		
 		# populate broadening array
-		for bg_name, broad_url in self._api_broad_urls.items():
-			i_bg.setdefault(bg_name,0)
+		for bg_name, broad_url in self.api_broad_urls.items():
 			fpath = fetch.file_from_cache(broad_url, cache=PKG_CACHE, return_fpath=True)
 			
+			bg_slice = broad_array_gas_slices[bg_name]
+			i = 0
 			with open(fpath, 'r') as f:
 				for aline in f:
-					split_line = aline.split()
-					code, gamma, temp_exp, Jpp = split_line[:4]
-					quantum_number_strings = split_line[4:]
-					Jpp = ts_dtype_dict['J"'](Jpp)
+					qn_code, gamma, temp_exp, *quantum_number_strings = aline.split()
+					
+					qn_set = list(self.get_qn_set_for_broad_gas(bg_name, qn_code)) # Must be a list for indexing a structured array
 				
-					quantum_numbers = []
-					for (name, value_string) in zip(self.possible_qn_sets[code][1:], quantum_number_strings):
-						type_converter = ts_dtype_dict[name]
-						quantum_numbers.append(type_converter(value_string) if not isinstance(type_converter, str) else value_string)
+					qn_values = []
+					for (qn_name, value_string) in zip(qn_set, quantum_number_strings):
+						type_converter = ts_dtype_dict[qn_name]
+						qn_values.append(type_converter(value_string) if not isinstance(type_converter, str) else value_string)
 					
-					qn_values = (Jpp,*quantum_numbers)
+					qn_values = tuple(qn_values)
 					
-					#print(f'{broad_array[i_bg[bg_name]]=}')
-					#print(f'{self.possible_qn_sets[code]=}')
 					
-					#not_shared_names = [x for x in self.possible_qn_sets[code] if x not in broad_array.dtype.names]
-					#print(f'{not_shared_names=}')
+					broad_array[qn_set][bg_slice][i] = qn_values
+					_lgr.debug(f'{bg_name=} {broad_array[qn_set][bg_slice][i]=}')
 					
-					broad_array[self.possible_qn_sets[code]][i_bg[bg_name]] = qn_values
-					broad_values[i_bg[bg_name]] = (float(gamma), float(temp_exp))
+					broad_values[bg_slice][i] = (float(gamma), float(temp_exp))
+					_lgr.debug(f'{bg_name=} {broad_values[bg_slice][i]=}')
 					
-					for name in self.possible_qn_sets[code]:
-						byte_start = broad_array.dtype.fields[name][1] / BYTES_DTYPE.itemsize
-						byte_end = byte_start + (broad_array.dtype.fields[name][0].itemsize / BYTES_DTYPE.itemsize)
+					for qn_name in qn_set:
+						byte_start = broad_array.dtype.fields[qn_name][1] / BYTES_DTYPE.itemsize
+						byte_end = byte_start + (broad_array.dtype.fields[qn_name][0].itemsize / BYTES_DTYPE.itemsize)
 						
-						assert byte_start == int(byte_start) and byte_end == int(byte_end)
+						assert byte_start == int(byte_start) and byte_end == int(byte_end), "When getting broadening data, must have whole number of bytes for array entries"
 						byte_start = int(byte_start)
 						byte_end = int(byte_end)
-						broad_comp_mask[i_bg[bg_name]][byte_start:byte_end] = True
+						broad_comp_mask[bg_slice][i][byte_start:byte_end] = True
 					
-					i_bg[bg_name] += 1
+					_lgr.debug(f'{bg_name=} {broad_comp_mask[bg_slice][i]=}')
+					
+					i += 1
 		
 		
-		broad_array = broad_array.view(BYTES_DTYPE).reshape(-1,broad_array.dtype.itemsize//BYTES_DTYPE.itemsize)
+		#broad_array = broad_array.view(BYTES_DTYPE).reshape(-1,broad_array.dtype.itemsize//BYTES_DTYPE.itemsize)
 		
 		return broad_array_gas_slices, broad_array, broad_comp_mask, broad_values
-	
-	@property
-	def broad_map(self) -> dict[str,dict[str,dict[tuple[Any,...],tuple[float,float]]]]:
-		if self._broad_map is None:
-			self._broad_map = dict()
-			# `broad_map` holds (gamma_X, temp_exp_X) broadening parameters for each broadening gas 
-			# of the dataset in the below format. 
-			#
-			# NOTE: Note that as `broad_map` is built from EXOMOL's "*.broad" files, and python
-			#       dictionaries preserve ordering. When iterating through `broad_map`, earlier values
-			#       take precedence over later values. 
-			#
-			# 	{ 
-			#		<bg_name> : { 
-			#			<code> : { 
-			#				<qn_values> : (
-			#					<qn_values_comparator>, 
-			#					(<gamma_X>, <temp_exp_X>)
-			#				)
-			#			} 
-			#		} 
-			#	}
-			# Where :
-			#  * <bg_name> is the name of the broadening gas
-			#  * <code> is the name of a set of quantum numbers that the following broadening coefficients 
-			#    are valid for.
-			#  * <qn_values> is a tuple of the values of the quantum numbers in the set denoted by <code> 
-			#    for which the following broadening coefficients are vaid.
-			#  * <qn_values_comparator> is the same data as <qn_values> but in a structured array, this is
-			#    required for performing comparisons (later on) which select the lines that are valid for a
-			#    specific set of broadening coefficients
-			#  * <gamma_X> and <temp_exp_X> are the broadening coefficients (lorentzian half-width and 
-			#    temperature exponent respectively) that should be used if a line has compatible quantum 
-			#    numbers.
-			#
-			# Example:
-			#	broad_map = { 
-			#		"H2" : { 
-			#			"a0" : { 
-			#				(0,) : (
-			#					np.array((0,), dtype=[('J"', int)]),
-			#					(<gamma_H2>, <temp_exp_H2>) # values are different for each entry
-			#				),
-			#				(1,) : (
-			#					np.array((1,), dtype=[('J"', int)]),
-			#					(<gamma_H2>, <temp_exp_H2>) # values are different for each entry
-			#				),
-			#				...
-			#			},
-			#			"a1" : {
-			#				(0,1) : (
-			#					np.array((0,1), dtype=[('J"', int), ('J\'', int)]),
-			#					(<gamma_H2>, <temp_exp_H2>) # values are different for each entry
-			#				),
-			#				(1,2) : (
-			#					np.array((1,2), dtype=[('J"', int), ('J\'', int)]),
-			#					(<gamma_H2>, <temp_exp_H2>) # values are different for each entry
-			#				),
-			#				...
-			#			},
-			#			...
-			#		},
-			#		"self" : {
-			#			"m0" : {
-			#				(0,) : (
-			#					np.array((0,), dtype=[('J"', int)]),
-			#					(<gamma_H2>, <temp_exp_H2>) # values are different for each entry
-			#				),
-			#				(-1,) : (
-			#					np.array((-1,), dtype=[('J"', int)]),
-			#					(<gamma_H2>, <temp_exp_H2>) # values are different for each entry
-			#				),
-			#				...
-			#			},
-			#			...
-			#		},
-			#		...
-			#	}
-			
-			ts_dtype_dict = dict((x,y[0].type) for x,y in self.transition_states_dtype.fields.items() if (x in self.transition_state_quantum_number_names))
-			
-			# Build `broad_map` for this dataset.
-			for bg_name, broad_url in self._api_broad_urls.items():
-				fpath = fetch.file_from_cache(broad_url, cache=PKG_CACHE, return_fpath=True)
-				
-				with open(fpath, 'r') as f:
-					self._broad_map.setdefault(bg_name, dict())
-					for aline in f:
-						split_line = aline.split()
-						code, gamma, temp_exp, Jpp = split_line[:4]
-						quantum_number_strings = split_line[4:]
-						Jpp = ts_dtype_dict['J"'](Jpp)
-					
-						quantum_numbers = []
-						for (name, value_string) in zip(self.possible_qn_sets[code][1:], quantum_number_strings):
-							type_converter = ts_dtype_dict[name]
-							quantum_numbers.append(type_converter(value_string) if not isinstance(type_converter, str) else value_string)
-						
-						qn_values = (Jpp,*quantum_numbers)
-						dtype = [(name,ts_dtype_dict[name]) for name in ('J"',*self.possible_qn_sets[code][1:])]
-						self._broad_map[bg_name].setdefault(code, dict())[qn_values] = (
-							np.array(qn_values, dtype=dtype),
-							(float(gamma), float(temp_exp))
-						)
-		return self._broad_map
 	
 	@property
 	def partition_function_dtype(self) -> list[tuple[str,Any]]:
@@ -629,6 +546,27 @@ class ExomolDatasetHolder:
 				check_web_first=True
 			)
 			_lgr.info(f'file fetched into "{fpath}"')
+	
+	
+	def get_qn_set_for_broad_gas(self, broad_gas_name : str, qn_code : None | str = None) -> dict[str, tuple[str,...]]:
+		"""
+		A dictionary mapping quantum number set codes (qn_codes) to the state names they use for all qn_codes for this dataset for this gas
+		"""
+		if qn_code is None:
+			return  qn_set_manager.get_sets_for_broad_gas_name(
+				self.isotope_def.dataset.states.quantum_case_label, 
+				self.isotope_def.mol_formula, 
+				self.isotope_def.isotopologue.iso_formula, 
+				broad_gas_name,
+			)
+		else:
+			return  qn_set_manager.get_set(
+				self.isotope_def.dataset.states.quantum_case_label, 
+				self.isotope_def.mol_formula, 
+				self.isotope_def.isotopologue.iso_formula, 
+				broad_gas_name,
+				qn_code
+			)
 	
 	
 	def trans_file_precidence(self, fpath : str | Path):
@@ -820,9 +758,6 @@ class ExomolDatasetHolder:
 					final_fpath.unlink()
 		
 	
-	
-	
-	
 	def convert_transition_files_to_fmt(
 			self, 
 			fmt : Literal['.trans', '.npy', '.bin', '.bin32'],
@@ -840,7 +775,6 @@ class ExomolDatasetHolder:
 			
 		dt_end = dt.datetime.now()
 		_lgr.info(f'Finished converting transitions at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
-	
 	
 	
 	def convert_single_transition_file_to_fmt_via_system_utilities(
@@ -914,7 +848,7 @@ class ExomolDatasetHolder:
 		new_fmt_system_commands_map = conversion_commands_map.get(old_fmt, None)
 		
 		if new_fmt_system_commands_map is None:
-			_lgr.info(f'No method to convert from format "{old_fmt}" to "{fmt}" via system commands, no entry for old format')
+			_lgr.info(f'No method to convert from format "{old_fmt}" to "{fmt}" via system commands, no entry for old format.')
 			return False
 		
 		conversion_system_commands = new_fmt_system_commands_map.get(fmt, None)
@@ -1029,76 +963,78 @@ class ExomolDatasetHolder:
 			# First, try using system utilities to decompress
 			if self.convert_single_transition_file_to_fmt_via_system_utilities(old_trans_fpath, new_trans_fpath, fmt):
 				pass
+			else:
+				_lgr.info('Attempting transition file conversion via python methods...')
 			
-			# Then try all other methods
-			elif fmt == '.trans':
-				with open(new_trans_fpath, 'w') as f:
-					for trans_chunk in self.iter_transitions(
-							chunk_size=chunk_size,
-							trans_fpaths=[old_trans_fpath],
-							ensure_no_iterative_conversion = True,
-					):
-						for trans_entry in trans_chunk:
-							if self.trans_n_cols == 3:
-								f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']}\n")
-							elif self.trans_n_cols == 4:
-								f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']} {trans_entry['wavenumber']}\n")
-							else:
-								raise RuntimeError('Cannot read ".trans" file. ".trans" files must have 3 or 4 columns')
-					
-			elif fmt == '.bin':
-				with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
-					for trans_chunk in self.iter_transitions(
-							chunk_size=chunk_size,
-							trans_fpaths=[old_trans_fpath],
-							ensure_no_iterative_conversion = True,
-					):
-						f.write(trans_chunk)
-			
-			elif fmt == '.bin32':
-				if old_trans_fpath.suffix == '.trans':
-					result = ConvertTransToBin32.run(old_trans_fpath, new_trans_fpath)
-					_lgr.info(f'File converted in {result.time_elapsed_sec:.2f} sec {result.bytes_sec/(1024*1024):.2f} MB/s {result.entries_sec*1E-6:.2f} Million Entries/s')
-				
-				else:
-					with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
-						new_chunk = np.empty((chunk_size,), dtype=self.trans32_dtype)
-						
+				# Then try all other methods
+				if fmt == '.trans':
+					with open(new_trans_fpath, 'w') as f:
 						for trans_chunk in self.iter_transitions(
 								chunk_size=chunk_size,
 								trans_fpaths=[old_trans_fpath],
 								ensure_no_iterative_conversion = True,
 						):
-							# 32 bit floating point does not have enough exponent to represent the smallest line strength
-							# values. Therefore multiply by a factor to bring them into range. When reading, divide by that
-							# factor.
-							chunk_slice = tuple(slice(s) for s in trans_chunk.shape)
-							trans_chunk['einstein_A'] *= TRANS_STR_FLOAT32_FACTOR
+							for trans_entry in trans_chunk:
+								if self.trans_n_cols == 3:
+									f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']}\n")
+								elif self.trans_n_cols == 4:
+									f.write(f"{trans_entry['lower_id']} {trans_entry['upper_id']} {trans_entry['einstein_A']} {trans_entry['wavenumber']}\n")
+								else:
+									raise RuntimeError('Cannot read ".trans" file. ".trans" files must have 3 or 4 columns')
+						
+				elif fmt == '.bin':
+					with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
+						for trans_chunk in self.iter_transitions(
+								chunk_size=chunk_size,
+								trans_fpaths=[old_trans_fpath],
+								ensure_no_iterative_conversion = True,
+						):
+							f.write(trans_chunk)
+				
+				elif fmt == '.bin32':
+					if old_trans_fpath.suffix == '.trans':
+						result = ConvertTransToBin32.run(old_trans_fpath, new_trans_fpath)
+						_lgr.info(f'File converted in {result.time_elapsed_sec:.2f} sec {result.bytes_sec/(1024*1024):.2f} MB/s {result.entries_sec*1E-6:.2f} Million Entries/s')
+					
+					else:
+						with structured_array.StructuredArrayFile(new_trans_fpath, 'wb') as f:
+							new_chunk = np.empty((chunk_size,), dtype=self.trans32_dtype)
 							
-							# Check that state ID numbers can fit into 32 bit unsigned integer
-							assert np.all(
-								(0 <= trans_chunk['lower_id']) 
-								& (trans_chunk['lower_id'] <= ((2**32) - 1))
-								& (0 <= trans_chunk['upper_id']) 
-								& (trans_chunk['upper_id'] <= ((2**32) - 1))
-							), f'State ID numbers must be within the range [0,{2**32-1}] to write to {fmt}'
-							
-							for name in trans_chunk.dtype.names:
-								new_chunk[name][chunk_slice] = trans_chunk[name]
-							
-							f.write(new_chunk)
-			
-			elif fmt == '.npy':
-				result = []
-				for trans_chunk in self.iter_transitions(
-						chunk_size=chunk_size,
-						trans_fpaths=[old_trans_fpath],
-						ensure_no_iterative_conversion = True,
-				):
-						result.append(trans_chunk)
-				np.concatenate(result).save(new_trans_fpath)
-			else:
-				raise RuntimeError(f'Cannot convert transition file "{old_trans_fpath.name}" to format "{fmt}" via system utilities or python methods.')
+							for trans_chunk in self.iter_transitions(
+									chunk_size=chunk_size,
+									trans_fpaths=[old_trans_fpath],
+									ensure_no_iterative_conversion = True,
+							):
+								# 32 bit floating point does not have enough exponent to represent the smallest line strength
+								# values. Therefore multiply by a factor to bring them into range. When reading, divide by that
+								# factor.
+								chunk_slice = tuple(slice(s) for s in trans_chunk.shape)
+								trans_chunk['einstein_A'] *= TRANS_STR_FLOAT32_FACTOR
+								
+								# Check that state ID numbers can fit into 32 bit unsigned integer
+								assert np.all(
+									(0 <= trans_chunk['lower_id']) 
+									& (trans_chunk['lower_id'] <= ((2**32) - 1))
+									& (0 <= trans_chunk['upper_id']) 
+									& (trans_chunk['upper_id'] <= ((2**32) - 1))
+								), f'State ID numbers must be within the range [0,{2**32-1}] to write to {fmt}'
+								
+								for name in trans_chunk.dtype.names:
+									new_chunk[name][chunk_slice] = trans_chunk[name]
+								
+								f.write(new_chunk)
+				
+				elif fmt == '.npy':
+					result = []
+					for trans_chunk in self.iter_transitions(
+							chunk_size=chunk_size,
+							trans_fpaths=[old_trans_fpath],
+							ensure_no_iterative_conversion = True,
+					):
+							result.append(trans_chunk)
+					np.concatenate(result).save(new_trans_fpath)
+				else:
+					raise RuntimeError(f'Cannot convert transition file "{old_trans_fpath.name}" to format "{fmt}" via system utilities or python methods.')
 		except:
 			# Remove the new file if anything goes wrong
 			if new_trans_fpath.exists():
@@ -1137,6 +1073,15 @@ class ExomolDatasetHolder:
 			
 			trans_states_chunk_part = trans_states_chunk[chunk_slice]
 			
+			# Set P,Q,R Branch value magnitude for the transition
+			spectral_data_source_helper.calc.numba.transition_states.transition_states_populate_abs_m(
+				self.states['J'],
+				trans_chunk['lower_id'],
+				trans_chunk['upper_id'],
+				trans_states_chunk_part['|m|']
+			)
+			
+			# Get the quantum number states for the transition
 			for state_name, lower_state_name, upper_state_name in zip(self.states_dtype.names, self.lower_state_names, self.upper_state_names):
 				spectral_data_source_helper.calc.numba.transition_states.transition_states_populate_state(
 					self.states[state_name],
@@ -1166,36 +1111,6 @@ class ExomolDatasetHolder:
 			
 			yield trans_states_chunk_part
 			
-			
-			"""
-			# NOTE: This loop is a bit of a bottleneck
-			
-			# NOTE: self.state['StateID'] is always one more than the index. Therefore can
-			# quickly select indices based upon the state ID numbers in `trans_chunk`
-			
-			# inplace operations are faster, but not by much
-			trans_chunk['lower_id'] -= 1
-			trans_chunk['upper_id'] -= 1
-			
-			#trans_states_chunk[self.lower_state_names][chunk_slice] = states[trans_chunk['lower_id']]
-			#trans_states_chunk[self.upper_state_names][chunk_slice] = states[trans_chunk['upper_id']]
-			#trans_states_chunk['einstein_A'][chunk_slice] = trans_chunk['einstein_A'][chunk_slice]
-			
-			# Not sure if these copies do anything
-			np.copyto(trans_states_chunk[self.lower_state_names][chunk_slice], states[trans_chunk['lower_id']])
-			np.copyto(trans_states_chunk[self.upper_state_names][chunk_slice], states[trans_chunk['upper_id']])
-			np.copyto(trans_states_chunk['einstein_A'][chunk_slice], trans_chunk['einstein_A'][chunk_slice])
-			
-			if calc_wavenumber_flag:
-				#trans_states_chunk['wavenumber'] = (trans_states_chunk['E\''] - trans_states_chunk['E"']) # Energy is in cm^{-1} so can just subtract
-				# Swapping to `np.subtract` seems to make a big difference
-				np.subtract(trans_states_chunk['E\''], trans_states_chunk['E"'], out=trans_states_chunk['wavenumber'])
-			else:
-				#trans_states_chunk['wavenumber'][chunk_slice] = trans_chunk['wavenumber']
-				np.copyto(trans_states_chunk['wavenumber'][chunk_slice], trans_chunk['wavenumber'])
-			
-			yield trans_states_chunk[chunk_slice]
-			"""
 		
 		dt_end = dt.datetime.now()
 		_lgr.info(f'Finished getting transition state information at {dt_end}. Took {(dt_end-dt_start).total_seconds()} s.')
@@ -1218,20 +1133,25 @@ class ExomolDatasetHolder:
 		broad_var_names_list = [[f'gamma_{bg_name}', f'n_{bg_name}'] for bg_name in self.broad_gas_names] # broadening coefficent names in order of broadeing gas names
 		broad_source_var_names = self.broad_source_var_names
 		
-		broad_array_gas_slices, broad_array, broad_comp_mask, broad_values = self.broadening_data
+		broad_array_gas_slices, broad_struct_array, broad_comp_mask, broad_values = self.broadening_data
 		
+		#qn_fields = list(broad_struct_array.dtype.fields.keys())
+		
+		broad_array = broad_struct_array.view(BYTES_DTYPE).reshape(-1,broad_struct_array.dtype.itemsize//BYTES_DTYPE.itemsize)
 		
 		for trans_states_chunk in self.iter_transition_states(chunk_size=chunk_size, trans_files_slice=trans_files_slice, skip_n_transition_states=skip_n_lines):
 			chunk_slice = slice(None,len(trans_states_chunk))
 			line_data_chunk_part = line_data_chunk[chunk_slice]
 			
-			
 			trans_states_chunk_bytes = trans_states_chunk.view(
 				BYTES_DTYPE
 			).reshape(-1,trans_states_chunk.dtype.itemsize // BYTES_DTYPE.itemsize)
+			#trans_states_chunk_bytes = (x:=trans_states_chunk[qn_fields]).view(
+			#	BYTES_DTYPE
+			#).reshape(-1,x.dtype.itemsize // BYTES_DTYPE.itemsize)
 			
 			
-			#print(f'{trans_states_chunk=}')
+			#_lgr.dev(f'{trans_states_chunk=}')
 			
 			# When the wavenumber is zero we want to set the einstein_A to zero, and
 			# set the wavenumber to 1 to avoid NANs, but still get zero contribution from
@@ -1264,20 +1184,19 @@ class ExomolDatasetHolder:
 				out_stim_emission = line_data_chunk_part['spec_stim_emission'],
 				out = line_data_chunk_part['spec_line_intensity'],
 			)
-			#print(f'{T_ref=}')
-			#print(f'{Q_ref=}')
-			#print(f'{line_data_chunk['E"']=}')
-			#print(f'{line_data_chunk['g_tot\'']=}')
-			#print(f'{line_data_chunk['wavenumber']=}')
-			#print(f'{line_data_chunk['einstein_A']=}')
-			#print(f'{line_data_chunk['spec_boltz_pop']=}')
-			#print(f'{line_data_chunk['spec_stim_emission']=}')
-			#print(f'{line_data_chunk['spec_line_intensity']=}')
+			#_lgr.debug(f'{T_ref=}')
+			#_lgr.debug(f'{Q_ref=}')
+			#_lgr.debug(f'{line_data_chunk['E"']=}')
+			#_lgr.debug(f'{line_data_chunk['g_tot\'']=}')
+			#_lgr.debug(f'{line_data_chunk['wavenumber']=}')
+			#_lgr.debug(f'{line_data_chunk['einstein_A']=}')
+			#_lgr.debug(f'{line_data_chunk['spec_boltz_pop']=}')
+			#_lgr.debug(f'{line_data_chunk['spec_stim_emission']=}')
+			#_lgr.debug(f'{line_data_chunk['spec_line_intensity']=}')
 			
 			# NOTE: This is still the limiting factor
 			for bg_name, broad_var_names, broad_source_name in zip(self.broad_gas_names, broad_var_names_list, broad_source_var_names):
 				broad_slice = broad_array_gas_slices[bg_name]
-				
 				
 				
 				broad_array_part = broad_array[broad_slice]
@@ -1294,9 +1213,6 @@ class ExomolDatasetHolder:
 					fallback_source_id = BroadeningSourceCode.EMERGENCY_FALLBACK
 				
 				
-				
-				#ldc = np.lib.recfunctions.structured_to_unstructured(line_data_chunk[broad_var_names], float)
-				#print(f'{ldc=}')
 				
 				spectral_data_source_helper.calc.numba.broadening.assign_broadening_parameters(
 					trans_states_chunk_bytes,

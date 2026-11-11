@@ -9,8 +9,9 @@ from typing import Generator, Literal, Any
 import dataclasses as dc
 
 from spectral_data_source_helper.cfg.log import progress_lgr
-from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
-
+import spectral_data_source_helper.cfg.log as logging
+_lgr = logging.getLogger(__name__)
+_lgr.setLevel(logging.INFO)
 
 WEB_PREFIXES = (
 	'https://',

@@ -11,8 +11,6 @@ import lzma
 
 import numpy as np
 
-from spectral_data_source_helper.cfg.log import progress_lgr
-from spectral_data_source_helper.cfg.log import pkg_logger as _lgr
 import spectral_data_source_helper.utils.dtype
 import spectral_data_source_helper.utils.structured_array
 
@@ -21,6 +19,10 @@ from .binary_reader import DecompressorProtocol, BinaryReader
 from ..progress_tracker.base import BaseProgressTracker
 from ..progress_tracker.chunk import ChunkProgressTracker
 
+from spectral_data_source_helper.cfg.log import progress_lgr
+import spectral_data_source_helper.cfg.log as logging
+_lgr = logging.getLogger(__name__)
+_lgr.setLevel(logging.INFO)
 #import logging
 
 PROGRESS_INTERVAL = 100_000
