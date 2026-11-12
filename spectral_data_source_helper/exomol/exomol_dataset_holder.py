@@ -218,7 +218,7 @@ class ExomolDatasetHolder:
 		if self._states is None:
 			dt_start = dt.datetime.now()
 			_lgr.info(f'Starting to load states at {dt_start}')
-
+			
 			states_url = self.api_states_urls[0]
 			if states_url.endswith('.bz2'):
 				states_numpy_fpath = (PKG_CACHE / f'{self.api_states_urls[0]}').with_suffix('.npz')
@@ -227,6 +227,7 @@ class ExomolDatasetHolder:
 			
 			if states_numpy_fpath.exists():
 				self._states = np.load(states_numpy_fpath)['states']
+				self._states.dtype = self.states_dtype # There are certain characters (e.g. ':') that numpy does not like to save as the name of a field, therefore have to re-set `self._states.dtype` to the actual value.
 			else:
 				# load from web/cache
 				self._states = np.genfromtxt(
@@ -359,9 +360,9 @@ class ExomolDatasetHolder:
 	def transition_states_dtype(self) -> list[tuple[str,Any]]:
 		states_dtype = self.states_dtype
 		
-		
-		lower_state_dtype = tuple((x, y) for x,y in zip(self.lower_state_names, (z[0].type for z in states_dtype.fields.values())))
-		upper_state_dtype = tuple((x, y) for x,y in zip(self.upper_state_names, (z[0].type for z in states_dtype.fields.values())))
+		# NOTE: use `z[0].str` instead of `z[0].type` as we need to keep the width value for any string-based fields.
+		lower_state_dtype = tuple((x, y) for x,y in zip(self.lower_state_names, (z[0].str for z in states_dtype.fields.values()))) 
+		upper_state_dtype = tuple((x, y) for x,y in zip(self.upper_state_names, (z[0].str for z in states_dtype.fields.values())))
 		
 		dtype = np.dtype(
 			[
