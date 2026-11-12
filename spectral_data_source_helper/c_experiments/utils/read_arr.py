@@ -11,6 +11,8 @@ fpath = Path(sys.argv[1])
 BIN32_HEADER_3_COLS = b"STRUCTURED{;upper_id;0;TYPE{;<u4;};lower_id;4;TYPE{;<u4;};einstein_A;8;TYPE{;<f4;};}"
 BIN32_HEADER_4_COLS = b"STRUCTURED{;upper_id;0;TYPE{;<u4;};lower_id;4;TYPE{;<u4;};einstein_A;8;TYPE{;<f4;};wavenumber;8;TYPE{;<f4;};}"
 
+TRANS_STR_FLOAT32_FACTOR=1E-20
+
 dtype_3col = np.dtype([('upper_id','<u4'), ('lower_id', '<u4'), ('einstein_A', '<f4')])
 format_3col = '{} {} {:.3e}'
 dtype_4col = np.dtype([('upper_id','<u4'), ('lower_id', '<u4'), ('einstein_A', '<f4'), ('wavenumber', '<f4')])
@@ -36,7 +38,9 @@ def read_file_as_arr(fpath) -> np.ndarray:
 		else:
 			raise RuntimeError(f"File {fpath} does not have a recognized header, got {h}")
 		
-		return np.fromfile(f, dtype=use_dtype), formatter
+		result = np.fromfile(f, dtype=use_dtype) 
+		result['einstein_A'] *= TRANS_STR_FLOAT32_FACTOR
+		return result, formatter
 
 
 a, formatter = read_file_as_arr(fpath)
