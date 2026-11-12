@@ -291,7 +291,7 @@ class ExomolDatasetHolder:
 	
 	@property
 	def transition_state_names(self):
-		return ('|m|', *self.lower_state_names, *self.upper_state_names)
+		return ('m', '|m|', *self.lower_state_names, *self.upper_state_names)
 	
 	@property
 	def transition_state_quantum_number_names(self):
@@ -363,9 +363,10 @@ class ExomolDatasetHolder:
 		
 		dtype = np.dtype(
 			[
-				('einstein_A', float),
-				('wavenumber', float),
-				('|m|', float), # P,Q,R branch value, always +ve, should be NAN if not a P,Q,R branch transition
+				('einstein_A', '<f8'),
+				('wavenumber', '<f8'),
+				('m', '<f8'), # P,Q,R branch value, should be NAN if not a P,Q,R branch transition
+				('|m|', '<f8'), # magnitude of P,Q,R branch value, always +ve, should be NAN if not a P,Q,R branch transition
 				*lower_state_dtype,
 				*upper_state_dtype,
 			],
@@ -475,6 +476,19 @@ class ExomolDatasetHolder:
 					qn_code, gamma, temp_exp, *quantum_number_strings = aline.split()
 					
 					qn_set = list(self.get_qn_set_for_broad_gas(bg_name, qn_code)) # Must be a list for indexing a structured array
+					
+					# Slight difficulty, some *.broad files actually use `m` instead of `|m|` for the qn_codes "m0", "m1", ...
+					# Therefore, IF `|m|` is present in `qn_set`, and IF the corresponding value is negative, I need to swap
+					# from `|m|` to `m`.
+					try:
+						m_idx = qn_set.index('|m|')
+					except ValueError:
+						m_idx = -1
+					
+					if m_idx >= 0 and (quantum_number_strings[m_idx][0] == '-'): # if we have `|m|`, and the quantum number if -ve (starts with `-`)
+						qn_set[m_idx] = 'm'
+					# At this point we should have the correct quantum number names for `qn_code`
+					
 				
 					qn_values = []
 					for (qn_name, value_string) in zip(qn_set, quantum_number_strings):
@@ -1074,11 +1088,12 @@ class ExomolDatasetHolder:
 			trans_states_chunk_part = trans_states_chunk[chunk_slice]
 			
 			# Set P,Q,R Branch value magnitude for the transition
-			spectral_data_source_helper.calc.numba.transition_states.transition_states_populate_abs_m(
+			spectral_data_source_helper.calc.numba.transition_states.transition_states_populate_m_and_abs_m(
 				self.states['J'],
 				trans_chunk['lower_id'],
 				trans_chunk['upper_id'],
-				trans_states_chunk_part['|m|']
+				trans_states_chunk_part['m'],
+				trans_states_chunk_part['|m|'],
 			)
 			
 			# Get the quantum number states for the transition
@@ -1213,7 +1228,6 @@ class ExomolDatasetHolder:
 					fallback_source_id = BroadeningSourceCode.EMERGENCY_FALLBACK
 				
 				
-				
 				spectral_data_source_helper.calc.numba.broadening.assign_broadening_parameters(
 					trans_states_chunk_bytes,
 					broad_array_part,
@@ -1228,7 +1242,6 @@ class ExomolDatasetHolder:
 					line_data_chunk[broad_var_names[1]],
 					line_data_chunk[broad_source_name]
 				)
-			
 			
 			yield line_data_chunk_part
 			
