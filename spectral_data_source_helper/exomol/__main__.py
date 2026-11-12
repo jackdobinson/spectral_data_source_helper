@@ -442,7 +442,7 @@ def action_calc_continuum(
 					
 					print('     Temperature | num. strong lines | num. weak lines | total strong lines | total weak lines')
 					for temp, n_sl, n_wl, t_sl, t_wl in zip(temperature_arr, n_strong_lines, n_weak_lines_in_continuum, total_strong_lines, total_weak_lines_in_continuum):
-						print(f'     {temp:11.2f} | {n_sl:17d} | {n_wl:16d} | {t_sl:18d} | {t_wl:16d}')
+						print(f'     {temp:11.2f} | {n_sl:17d} | {n_wl:15d} | {t_sl:18d} | {t_wl:16d}')
 					
 					print(f'Elapsed time: {dt_elapsed_str}')
 		
