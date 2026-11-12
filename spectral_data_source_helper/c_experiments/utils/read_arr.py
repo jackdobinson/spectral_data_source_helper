@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-assert len(sys.argv) == 1, "Require a single positional argument"
+assert len(sys.argv) == 2, "Require a single positional argument"
 
 fpath = Path(sys.argv[1])
 
