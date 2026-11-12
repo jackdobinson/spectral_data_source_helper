@@ -229,10 +229,12 @@ class ExomolDatasetHolder:
 				self._states = np.load(states_numpy_fpath)['states']
 			else:
 				# load from web/cache
-				self._states = np.loadtxt(
+				self._states = np.genfromtxt(
 					fetch.file_from_cache(f'https://www.{self.api_states_urls[0]}',cache=PKG_CACHE,return_fpath=True), 
 					dtype = self.states_dtype,
-					delimiter=None
+					delimiter=None,
+					missing_values=('NAN',),
+					filling_values=(np.nan,),
 				)
 				
 				# save to faster format
