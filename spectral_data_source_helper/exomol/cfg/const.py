@@ -27,6 +27,12 @@ EXOMOL_TRANSITION_FILE_ENDINGS = (
 	'.trans.bz2',
 )
 
+COMPULSORY_STATE_COLUMN_NAMES = ('E', 'g_tot', 'StateID') # These columns are always expected in a *.states file
+STANDARDISED_STATE_COLUMN_NAMES = { # Some columns we need to always have the same standardised names as we rely on them in other things
+	'g_tot' : ('g_tot', 'gtot'),
+	'StateID' : ('StateID', 'ID'),
+}
+
 # Reference temperature and pressure defined in the [pressure broadening diet](https://doi.org/10.1016/j.jqsrt.2017.01.028) paper.
 EXOMOL_T_ref         : float    = 296.0                                          # K                    Exomol Reference temperature (Kelvin)
 EXOMOL_P_ref         : float    = 0.986923                                       # atm                  Exomol Reference pressure (atm)

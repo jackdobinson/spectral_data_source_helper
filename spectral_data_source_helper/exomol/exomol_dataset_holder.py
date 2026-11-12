@@ -1184,7 +1184,11 @@ class ExomolDatasetHolder:
 				dest_2_const=0,
 			)
 			
+			#_lgr.dev(f'{trans_states_chunk['E"']=}')
+			#_lgr.dev(f'{trans_states_chunk['g_tot\'']=}')
+			
 			for name in (x for x in cols_from_trans_states if x not in ('wavenumber', 'einstein_A')):
+				#_lgr.dev(f'{name=}')
 				spectral_data_source_helper.calc.numba.copy(
 					trans_states_chunk[name],
 					line_data_chunk_part[name]
@@ -1202,15 +1206,15 @@ class ExomolDatasetHolder:
 				out_stim_emission = line_data_chunk_part['spec_stim_emission'],
 				out = line_data_chunk_part['spec_line_intensity'],
 			)
-			#_lgr.debug(f'{T_ref=}')
-			#_lgr.debug(f'{Q_ref=}')
-			#_lgr.debug(f'{line_data_chunk['E"']=}')
-			#_lgr.debug(f'{line_data_chunk['g_tot\'']=}')
-			#_lgr.debug(f'{line_data_chunk['wavenumber']=}')
-			#_lgr.debug(f'{line_data_chunk['einstein_A']=}')
-			#_lgr.debug(f'{line_data_chunk['spec_boltz_pop']=}')
-			#_lgr.debug(f'{line_data_chunk['spec_stim_emission']=}')
-			#_lgr.debug(f'{line_data_chunk['spec_line_intensity']=}')
+			#_lgr.dev(f'{T_ref=}')
+			#_lgr.dev(f'{Q_ref=}')
+			#_lgr.dev(f'{line_data_chunk['E"']=}')
+			#_lgr.dev(f'{line_data_chunk['g_tot\'']=}')
+			#_lgr.dev(f'{line_data_chunk['wavenumber']=}')
+			#_lgr.dev(f'{line_data_chunk['einstein_A']=}')
+			#_lgr.dev(f'{line_data_chunk['spec_boltz_pop']=}')
+			#_lgr.dev(f'{line_data_chunk['spec_stim_emission']=}')
+			#_lgr.dev(f'{line_data_chunk['spec_line_intensity']=}')
 			
 			# NOTE: This is still the limiting factor
 			for bg_name, broad_var_names, broad_source_name in zip(self.broad_gas_names, broad_var_names_list, broad_source_var_names):
@@ -1425,6 +1429,7 @@ class ExomolDatasetHolder:
 			#print(f'{boltz_pop_ratio_part=}')
 			
 			#print(f'{line_data_chunk['spec_boltz_pop']=}')
+			#print(f'{line_data_chunk['spec_line_intensity']=}')
 			
 			spectral_data_source_helper.calc.numba.spec.line_strength_from_temp_ratios(
 				line_data_chunk['spec_line_intensity'],
@@ -1434,6 +1439,7 @@ class ExomolDatasetHolder:
 				out = line_strengths_at_temp_part
 			)
 			#print(f'{line_strengths_at_temp_part=}')
+			#print(f'{line_strengths_at_temp_part.size=} {np.count_nonzero(line_strengths_at_temp_part==0)=}')
 			
 			spectral_data_source_helper.calc.numba.is_gt_2d_0d(
 				line_strengths_at_temp_part,

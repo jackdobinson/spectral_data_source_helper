@@ -26,6 +26,8 @@ from .cfg.const import (
 	EXOMOL_TRANSITION_FILE_ENDINGS,
 	EXOMOL_API_URL_FMT,
 	EXOMOL_API_INTERNAL_URL_START,
+	COMPULSORY_STATE_COLUMN_NAMES,
+	STANDARDISED_STATE_COLUMN_NAMES,
 )
 
 from . import qn_set_manager
@@ -33,6 +35,10 @@ from . import qn_set_manager
 import spectral_data_source_helper.cfg.log as logging
 _lgr = logging.getLogger(__name__)
 _lgr.setLevel(logging.INFO)
+
+
+
+
 
 
 class ExomolIsotopeDefNotFoundError(Exception):
@@ -107,13 +113,24 @@ class ExomolStatesInfo:
 	def get_states_field_dtype(self) -> np.dtype:
 		dtype = []
 		for esf in self.states_file_fields:
+			state_column_name = esf.name
+			for standard_name, possible_aliases in STANDARDISED_STATE_COLUMN_NAMES.items():
+				if esf.name in possible_aliases:
+					state_column_name = standard_name
+					break
+			
 			dtype.append(
 				(
-					esf.name,
+					state_column_name,
 					cfmt.str_to_type(esf.cfmt)
 				)
 			)
 		_lgr.debug(f'{dtype=}')
+		
+		# Check we have all the compulsory column names
+		dtype_names = [x[0] for x in dtype]
+		assert all(required_name in dtype_names for required_name in COMPULSORY_STATE_COLUMN_NAMES), f"states file must have all of these column names {COMPULSORY_STATE_COLUMN_NAMES}, some are missing. They may have aliases that can be added to the `exomol.cfg.const` file."
+		
 		return np.dtype(dtype)
 		
 	def get_states_field_widths(self) -> list[int,...]:

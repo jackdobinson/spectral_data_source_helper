@@ -17,7 +17,7 @@ def transition_states_populate_state(
 		out_upper_state : np.ndarray, # <int|float>[N_trans]
 ):
 	for i in prange(trans_lower_id.shape[0]):
-		out_lower_state[i] = state[trans_lower_id[i] - 1]
+		out_lower_state[i] = state[trans_lower_id[i] - 1] # state ID numbers are 1-based, so convert to 0-based indexes
 		out_upper_state[i] = state[trans_upper_id[i] - 1]
 
 @njit(parallel=PARALLEL)
@@ -29,20 +29,25 @@ def transition_states_populate_m_and_abs_m(
 		out_m : np.ndarray, # m float[N_trans]
 		out_abs_m : np.ndarray, # m float[N_trans]
 ):
+	trans_final_idx : int = -1
+	trans_initial_idx : int = -1
 	for i in prange(trans_final_id.shape[0]):
-		delta_J = state_qn_J[trans_final_id[i]] - state_qn_J[trans_initial_id[i]]
+		trans_final_idx = trans_final_id[i] - 1 # state ID numbers are 1-based, so convert to 0-based indexes
+		trans_initial_idx = trans_initial_id[i] - 1
+		
+		delta_J = state_qn_J[trans_final_idx] - state_qn_J[trans_initial_idx]
 		if delta_J == -1:
 			# m = -J"
-			out_m[i] = -1*state_qn_J[trans_final_id[i]]
-			out_abs_m[i] = state_qn_J[trans_final_id[i]]
+			out_m[i] = -1*state_qn_J[trans_final_idx]
+			out_abs_m[i] = state_qn_J[trans_final_idx]
 		elif delta_J == 0:
 			# m = J"
-			out_m[i] = state_qn_J[trans_final_id[i]]
-			out_abs_m[i] = state_qn_J[trans_final_id[i]]
+			out_m[i] = state_qn_J[trans_final_idx]
+			out_abs_m[i] = state_qn_J[trans_final_idx]
 		elif delta_J == 1:
 			# m == J"+1
-			out_m[i] = state_qn_J[trans_final_id[i]] + 1
-			out_abs_m[i] = state_qn_J[trans_final_id[i]] + 1
+			out_m[i] = state_qn_J[trans_final_idx] + 1
+			out_abs_m[i] = state_qn_J[trans_final_idx] + 1
 		else:
 			out_m[i] = np.nan
 			out_abs_m[i] = np.nan
